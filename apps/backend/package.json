@@ -1,0 +1,29 @@
+{
+  "name": "@jharanai/backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "lint": "echo \"lint not configured yet\"",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no tests yet\" && exit 0",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:reset": "prisma migrate reset",
+    "db:studio": "prisma studio",
+    "db:seed": "tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@jharanai/shared": "*",
+    "@prisma/client": "^5.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "prisma": "^5.18.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.4.0"
+  }
+}

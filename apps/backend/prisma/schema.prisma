@@ -1,0 +1,298 @@
+// Jharanai CRM — database schema
+// Run: npm run prisma:migrate
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Pooled connection (port 6543 on Supabase) — used at runtime.
+  url       = env("DATABASE_URL")
+  // Direct connection (port 5432) — required by Prisma Migrate to bypass PgBouncer.
+  // On local/non-Supabase Postgres, set DIRECT_URL = DATABASE_URL.
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================
+// Users (Admin / Executive)
+// ============================================================
+
+enum UserRole {
+  ADMIN
+  EXECUTIVE
+}
+
+model User {
+  id           String   @id @default(cuid())
+  role         UserRole
+  name         String
+  phone        String   @unique
+  email        String?  @unique
+  passwordHash String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Executive-specific
+  executive Executive?
+}
+
+// ============================================================
+// Routes & Executives
+// ============================================================
+
+model Route {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  area      String
+  pinCodes  String[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customers  Customer[]
+  executive  Executive?
+  deliveries Delivery[]
+  broadcasts BroadcastRoute[]
+}
+
+model Executive {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  routeId   String?  @unique
+  route     Route?   @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries Delivery[]
+}
+
+// ============================================================
+// Customers
+// ============================================================
+
+enum CustomerStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+model Customer {
+  id           String         @id @default(cuid())
+  code         String         @unique // human readable, e.g. JHR-100455
+  name         String
+  phone        String         @unique
+  altPhone     String?
+  email        String?
+  addressLine1 String
+  addressLine2 String?
+  area         String?
+  pinCode      String?
+  routeId      String?
+  route        Route?         @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  routeSeq     Int? // order within route
+  status       CustomerStatus @default(ACTIVE)
+  litresPerDay Decimal        @default(0) @db.Decimal(6, 2)
+  balance      Decimal        @default(0) @db.Decimal(10, 2)
+  qrCodeUrl    String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  subscriptions Subscription[]
+  pauses        PauseRecord[]
+  payments      Payment[]
+  deliveries    Delivery[]
+  whatsappLogs  WhatsAppLog[]
+
+  @@index([routeId, status])
+  @@index([phone])
+}
+
+// ============================================================
+// Subscriptions
+// ============================================================
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+model Subscription {
+  id            String             @id @default(cuid())
+  customerId    String
+  customer      Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  sku           String             @default("COW_MILK")
+  litresPerDay  Decimal            @db.Decimal(6, 2)
+  daysOfWeek    Int[] // 0=Sun .. 6=Sat
+  ratePerLitre  Decimal            @db.Decimal(8, 2)
+  startDate     DateTime
+  endDate       DateTime?
+  status        SubscriptionStatus @default(ACTIVE)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  pauses PauseRecord[]
+
+  @@index([customerId, status])
+}
+
+model PauseRecord {
+  id             String       @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  startDate      DateTime
+  endDate        DateTime
+  reason         String?
+  createdAt      DateTime     @default(now())
+
+  @@index([subscriptionId])
+}
+
+// ============================================================
+// Payments
+// ============================================================
+
+enum PaymentMode {
+  CASH
+  UPI_STATIC
+  UPI_ONLINE
+  CARD
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id         String        @id @default(cuid())
+  customerId String
+  customer   Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  amount     Decimal       @db.Decimal(10, 2)
+  mode       PaymentMode
+  status     PaymentStatus @default(PENDING)
+  reference  String? // gateway ref or note
+  paidAt     DateTime?
+  createdAt  DateTime      @default(now())
+
+  @@index([customerId, status])
+}
+
+// ============================================================
+// Deliveries
+// ============================================================
+
+enum DeliveryStatus {
+  PENDING
+  DELIVERED
+  PARTIAL
+  SKIPPED
+  MISSED
+}
+
+model Delivery {
+  id               String         @id @default(cuid())
+  customerId       String
+  customer         Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  routeId          String
+  route            Route          @relation(fields: [routeId], references: [id])
+  executiveId      String?
+  executive        Executive?     @relation(fields: [executiveId], references: [id], onDelete: SetNull)
+  scheduledLitres  Decimal        @db.Decimal(6, 2)
+  deliveredLitres  Decimal?       @db.Decimal(6, 2)
+  status           DeliveryStatus @default(PENDING)
+  scheduledFor     DateTime
+  scannedAt        DateTime?
+  note             String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([customerId, scheduledFor])
+  @@index([routeId, scheduledFor])
+  @@index([executiveId, scheduledFor])
+}
+
+// ============================================================
+// Broadcasts (WhatsApp updates to routes)
+// ============================================================
+
+enum BroadcastTarget {
+  ALL
+  ROUTES
+  CUSTOMERS
+}
+
+enum BroadcastStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+}
+
+model Broadcast {
+  id             String          @id @default(cuid())
+  message        String
+  templateName   String?
+  target         BroadcastTarget
+  scheduledFor   DateTime?
+  status         BroadcastStatus @default(DRAFT)
+  sentCount      Int             @default(0)
+  deliveredCount Int             @default(0)
+  failedCount    Int             @default(0)
+  createdById    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  routes BroadcastRoute[]
+}
+
+model BroadcastRoute {
+  broadcastId String
+  routeId     String
+  broadcast   Broadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  route       Route     @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@id([broadcastId, routeId])
+}
+
+// ============================================================
+// WhatsApp message log (cost tracking + audit)
+// ============================================================
+
+enum WaDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum WaCategory {
+  UTILITY
+  AUTHENTICATION
+  MARKETING
+  SERVICE
+}
+
+model WhatsAppLog {
+  id         String      @id @default(cuid())
+  customerId String?
+  customer   Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  phone      String
+  direction  WaDirection
+  templateId String?
+  category   WaCategory?
+  body       String?
+  metaMsgId  String?
+  status     String?
+  costInr    Decimal?    @db.Decimal(8, 4)
+  timestamp  DateTime    @default(now())
+
+  @@index([customerId])
+  @@index([phone, timestamp])
+}

@@ -1,0 +1,29 @@
+{
+  "name": "jharanai-crm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Jharanai dairy CRM & Sales Management — WhatsApp + Mobile + Web Admin",
+  "workspaces": [
+    "apps/web-admin",
+    "apps/backend",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "prettier": "^3.2.5"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "packageManager": "npm@10.8.2"
+}

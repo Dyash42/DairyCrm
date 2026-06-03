@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-bg text-text-primary font-sans text-base;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  /* Tabular numerals everywhere numbers matter */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface rounded-xl shadow-card border border-border;
+  }
+
+  .card-pad {
+    @apply card p-5;
+  }
+
+  /* Status pills */
+  .pill {
+    @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium;
+  }
+  .pill-success {
+    @apply pill bg-success-light text-success-dark;
+  }
+  .pill-warning {
+    @apply pill bg-warning-light text-warning-dark;
+  }
+  .pill-danger {
+    @apply pill bg-danger-light text-danger-dark;
+  }
+  .pill-info {
+    @apply pill bg-info-light text-info;
+  }
+  .pill-muted {
+    @apply pill bg-surface-muted text-text-secondary border border-border;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 h-10 rounded-lg
+           text-sm font-medium transition-colors
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-brand text-brand-fg hover:bg-brand-600;
+  }
+  .btn-secondary {
+    @apply btn bg-surface border border-border text-text-primary hover:bg-surface-muted;
+  }
+  .btn-ghost {
+    @apply btn text-text-secondary hover:bg-surface-muted;
+  }
+
+  /* Inputs */
+  .input {
+    @apply h-10 px-3 rounded-lg bg-surface border border-border
+           text-text-primary placeholder:text-text-muted
+           focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand;
+  }
+
+  /* Tables */
+  .data-table {
+    @apply w-full text-sm;
+  }
+  .data-table thead {
+    @apply text-text-muted text-xs uppercase tracking-wide;
+  }
+  .data-table thead th {
+    @apply px-5 py-3 text-left font-medium;
+  }
+  .data-table tbody tr {
+    @apply border-t border-divider hover:bg-surface-muted/60 transition-colors;
+  }
+  .data-table tbody td {
+    @apply px-5 py-4 align-middle;
+  }
+}
+
+/* Scrollbar — subtle */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 26, 36, 0.12);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 26, 36, 0.2);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

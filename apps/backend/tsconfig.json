@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "ES2022",
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "noEmit": true,
+    "paths": {
+      "@jharanai/shared": ["../../packages/shared/src"]
+    }
+  },
+  "include": ["src/**/*", "prisma/seed.ts"],
+  "exclude": ["node_modules", "dist"]
+}

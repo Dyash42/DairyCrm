@@ -1,0 +1,65 @@
+name: CI
+
+# Runs on every PR and every push to main.
+# Enforces the SOP "green before push" rule: types + tests + build green.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs when a new commit lands on the same PR/branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install (root + all workspaces)
+        run: npm install --no-audit --no-fund
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        working-directory: apps/backend
+
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck -ws --if-present
+
+      - name: Test (all workspaces)
+        run: npm run test -ws --if-present
+
+      - name: Production build (web-admin)
+        run: npm run build -w @jharanai/web-admin
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: npm audit (high+ severity)
+        # Surfaces high/critical vulns. Doesn't block the run yet — flip to
+        # `--audit-level high` and remove `|| true` once the queue is clean.
+        run: npm audit --audit-level=high || true

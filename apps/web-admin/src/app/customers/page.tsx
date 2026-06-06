@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Search, Download, ChevronRight } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
@@ -8,11 +8,17 @@ import { SegmentedTabs } from '@/components/ui/Tabs';
 import { StatusPill, type PillTone } from '@/components/ui/StatusPill';
 import { Avatar } from '@/components/ui/Avatar';
 import {
-  customers,
+  customers as mockCustomers,
   getInitials,
   getRouteName,
 } from '@/lib/mock-data';
-import { formatINR, formatLitres, type CustomerStatus } from '@jharanai/shared';
+import { fetchCustomers } from '@/lib/api';
+import {
+  formatINR,
+  formatLitres,
+  type Customer,
+  type CustomerStatus,
+} from '@jharanai/shared';
 
 type Filter = 'ALL' | CustomerStatus;
 
@@ -31,8 +37,48 @@ const LABEL: Record<CustomerStatus, string> = {
 export default function CustomersPage() {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [query, setQuery] = useState('');
+  const [customers, setCustomers] = useState<Customer[]>(mockCustomers);
+  const [, setSource] = useState<'live' | 'mock' | 'loading'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCustomers({
+      q: query || undefined,
+      status: filter === 'ALL' ? undefined : filter,
+      limit: 100,
+    })
+      .then((data) => {
+        if (cancelled) return;
+        setCustomers(
+          data.customers.map((c) => ({
+            id: c.id,
+            code: c.code,
+            name: c.name,
+            phone: c.phone,
+            addressLine1: c.addressLine1,
+            routeId: c.routeId ?? undefined,
+            status: c.status,
+            litresPerDay: Number(c.litresPerDay),
+            balance: Number(c.balance),
+            createdAt: '',
+            updatedAt: '',
+          })),
+        );
+        setSource('live');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCustomers(mockCustomers);
+        setSource('mock');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [query, filter]);
 
   const rows = useMemo(() => {
+    // The server already filters; this re-filter handles the mock-data path
+    // (server is unreachable → we apply filter client-side).
     const q = query.trim().toLowerCase();
     return customers.filter((c) => {
       if (filter !== 'ALL' && c.status !== filter) return false;
@@ -43,7 +89,7 @@ export default function CustomersPage() {
         (c.addressLine1?.toLowerCase().includes(q) ?? false)
       );
     });
-  }, [filter, query]);
+  }, [customers, filter, query]);
 
   return (
     <>

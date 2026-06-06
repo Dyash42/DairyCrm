@@ -1,27 +1,28 @@
 /**
- * Backend entry point — placeholder.
+ * Backend entry point — starts the Fastify HTTP server.
  *
- * NestJS modules and HTTP bootstrap will be wired in once `@nestjs/*` deps
- * are reinstalled (held back temporarily due to a transitive resolution
- * issue we'll fix in the next iteration).
+ * Run:
+ *   npm run dev    # tsx watch
+ *   npm start      # plain tsx
  *
- * Until then, the backend's job is:
- *   - own the Prisma schema (single source of truth for the data layer)
- *   - provide a typed Prisma client to other apps via packages/shared (later)
- *   - run migrations + seed via `npm run db:*` scripts
+ * Health: GET /health
+ * OpenAPI / docs: not yet — add @fastify/swagger when needed.
  */
 
-import { prisma } from './prisma';
+import { loadConfig } from './config';
+import { buildServer } from './server';
 
 async function main() {
-  // eslint-disable-next-line no-console
-  console.log('[jharanai/backend] placeholder bootstrap — Prisma reachable.');
-  await prisma.$connect();
-  await prisma.$disconnect();
+  const config = loadConfig();
+  const app = await buildServer();
+
+  try {
+    await app.listen({ port: config.PORT, host: '0.0.0.0' });
+    app.log.warn({ port: config.PORT }, '[jharanai/backend] listening');
+  } catch (err) {
+    app.log.error({ err }, 'failed to start server');
+    process.exit(1);
+  }
 }
 
-void main().catch((e: unknown) => {
-  // eslint-disable-next-line no-console
-  console.error(e);
-  process.exit(1);
-});
+void main();

@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { useAuth } from '@/lib/auth-context';
 
 type NavItem = {
   href: string;
@@ -66,6 +67,15 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 export function Sidebar() {
+  const { user, logout } = useAuth();
+  const displayName = user?.name ?? 'Anil Das';
+  const initials = displayName
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase() ?? '')
+    .join('');
+
   return (
     <aside className="w-60 shrink-0 bg-brand text-white flex flex-col h-screen sticky top-0">
       {/* Brand */}
@@ -101,16 +111,17 @@ export function Sidebar() {
       {/* User profile pinned bottom */}
       <div className="m-3 p-3 rounded-xl bg-white/5 flex items-center gap-3">
         <div className="w-9 h-9 rounded-full bg-accent-light text-brand font-semibold flex items-center justify-center text-sm">
-          AD
+          {initials || 'AD'}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium truncate">Anil Das</div>
+          <div className="text-sm font-medium truncate">{displayName}</div>
           <div className="text-[11px] text-white/60 truncate">
             Operations Admin
           </div>
         </div>
         <button
           aria-label="Sign out"
+          onClick={logout}
           className="text-white/60 hover:text-white p-1.5 rounded-md hover:bg-white/10"
         >
           <LogOut size={16} />

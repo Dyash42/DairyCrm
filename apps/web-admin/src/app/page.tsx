@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Droplet, Users, IndianRupee, CheckCircle2 } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
@@ -13,6 +13,7 @@ import { RouteVolumeBars } from '@/components/dashboard/RouteVolumeBars';
 import { SubscriptionsDonut } from '@/components/dashboard/SubscriptionsDonut';
 import { RouteCompletionBars } from '@/components/dashboard/RouteCompletionBars';
 import { dashboardMetrics } from '@/lib/mock-data';
+import { fetchDashboardMetrics, type DashboardMetricsPayload } from '@/lib/api';
 import { formatINR } from '@jharanai/shared';
 
 type Range = 'TODAY' | 'WEEK' | 'MONTH';
@@ -21,7 +22,28 @@ const TODAY_LABEL = 'Mon, 2 Jun 2026';
 
 export default function DashboardPage() {
   const [range, setRange] = useState<Range>('TODAY');
-  const m = dashboardMetrics;
+  const [m, setM] = useState<DashboardMetricsPayload>(dashboardMetrics);
+  const [source, setSource] = useState<'live' | 'mock' | 'loading'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    setSource('loading');
+    fetchDashboardMetrics(range)
+      .then((data) => {
+        if (cancelled) return;
+        setM(data);
+        setSource('live');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Fallback: keep the mock so the demo never goes blank
+        setM(dashboardMetrics);
+        setSource('mock');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [range]);
 
   // Route completion sorted best→worst, only those with data
   const routeCompletion = [...m.byRoute]
@@ -50,7 +72,19 @@ export default function DashboardPage() {
             value={range}
             onChange={setRange}
           />
-          <div className="text-sm text-text-secondary">{TODAY_LABEL}</div>
+          <div className="text-sm text-text-secondary flex items-center gap-2">
+            {source === 'mock' && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-warning-light text-warning-dark">
+                demo data
+              </span>
+            )}
+            {source === 'live' && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-success-light text-success-dark">
+                live
+              </span>
+            )}
+            <span>{TODAY_LABEL}</span>
+          </div>
         </div>
 
         {/* KPIs */}

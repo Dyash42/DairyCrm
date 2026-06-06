@@ -99,11 +99,12 @@ model Customer {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
-  subscriptions Subscription[]
-  pauses        PauseRecord[]
-  payments      Payment[]
-  deliveries    Delivery[]
-  whatsappLogs  WhatsAppLog[]
+  subscriptions    Subscription[]
+  pauses           PauseRecord[]
+  payments         Payment[]
+  deliveries       Delivery[]
+  whatsappLogs     WhatsAppLog[]
+  renewalReminders RenewalReminder[]
 
   @@index([routeId, status])
   @@index([phone])
@@ -120,20 +121,21 @@ enum SubscriptionStatus {
 }
 
 model Subscription {
-  id            String             @id @default(cuid())
-  customerId    String
-  customer      Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  sku           String             @default("COW_MILK")
-  litresPerDay  Decimal            @db.Decimal(6, 2)
-  daysOfWeek    Int[] // 0=Sun .. 6=Sat
-  ratePerLitre  Decimal            @db.Decimal(8, 2)
-  startDate     DateTime
-  endDate       DateTime?
-  status        SubscriptionStatus @default(ACTIVE)
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  id           String             @id @default(cuid())
+  customerId   String
+  customer     Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  sku          String             @default("COW_MILK")
+  litresPerDay Decimal            @db.Decimal(6, 2)
+  daysOfWeek   Int[] // 0=Sun .. 6=Sat
+  ratePerLitre Decimal            @db.Decimal(8, 2)
+  startDate    DateTime
+  endDate      DateTime?
+  status       SubscriptionStatus @default(ACTIVE)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
-  pauses PauseRecord[]
+  pauses           PauseRecord[]
+  renewalReminders RenewalReminder[]
 
   @@index([customerId, status])
 }
@@ -146,10 +148,90 @@ model PauseRecord {
   customer       Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
   startDate      DateTime
   endDate        DateTime
+  /// endDate + 1 day — what scheduling engine resumes on.
+  resumeDate     DateTime
+  /// When the "deliveries resume tomorrow" WhatsApp reminder went out.
+  reminderSentAt DateTime?
   reason         String?
   createdAt      DateTime     @default(now())
 
+  autoResumeJob AutoResumeJob?
+
   @@index([subscriptionId])
+  @@index([startDate, endDate])
+  @@index([resumeDate])
+}
+
+/// Queued auto-resume action that fires on resumeDate.
+/// Lets us inspect, retry, and audit the lifecycle without polling.
+enum AutoResumeStatus {
+  PENDING
+  REMINDED
+  RESUMED
+  FAILED
+  CANCELLED
+}
+
+model AutoResumeJob {
+  id            String           @id @default(cuid())
+  pauseRecordId String           @unique
+  pauseRecord   PauseRecord      @relation(fields: [pauseRecordId], references: [id], onDelete: Cascade)
+  scheduledFor  DateTime
+  status        AutoResumeStatus @default(PENDING)
+  attempts      Int              @default(0)
+  lastError     String?
+  remindedAt    DateTime?
+  resumedAt     DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([status, scheduledFor])
+}
+
+/// Audit + metric source for PRD §9 "Subscription renewal rate".
+enum RenewalReminderStatus {
+  PENDING
+  SENT
+  RENEWED
+  EXPIRED
+  CANCELLED
+}
+
+model RenewalReminder {
+  id             String                @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription          @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer              @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  /// When the subscription is due to expire — drives when to send.
+  dueDate        DateTime
+  sentAt         DateTime?
+  respondedAt    DateTime?
+  status         RenewalReminderStatus @default(PENDING)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  @@index([status, dueDate])
+  @@index([customerId])
+}
+
+/// Atomic counter for human-readable customer codes (JHR-100455).
+/// Single-row table — we always upsert the row with key 'customer'.
+model CustomerCodeCounter {
+  key       String   @id // 'customer' for now; future: 'invoice', etc.
+  lastValue Int      @default(100454) // first issued code will be 100455
+  updatedAt DateTime @updatedAt
+}
+
+/// No-delivery days. The scheduling engine filters scheduledFor against this.
+model HolidayCalendar {
+  id        String   @id @default(cuid())
+  date      DateTime @unique @db.Date
+  reason    String
+  scope     String   @default("ALL") // 'ALL' or route id (route-specific holiday)
+  createdAt DateTime @default(now())
+
+  @@index([scope, date])
 }
 
 // ============================================================
@@ -198,25 +280,26 @@ enum DeliveryStatus {
 }
 
 model Delivery {
-  id               String         @id @default(cuid())
-  customerId       String
-  customer         Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  routeId          String
-  route            Route          @relation(fields: [routeId], references: [id])
-  executiveId      String?
-  executive        Executive?     @relation(fields: [executiveId], references: [id], onDelete: SetNull)
-  scheduledLitres  Decimal        @db.Decimal(6, 2)
-  deliveredLitres  Decimal?       @db.Decimal(6, 2)
-  status           DeliveryStatus @default(PENDING)
-  scheduledFor     DateTime
-  scannedAt        DateTime?
-  note             String?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  id              String         @id @default(cuid())
+  customerId      String
+  customer        Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  routeId         String
+  route           Route          @relation(fields: [routeId], references: [id])
+  executiveId     String?
+  executive       Executive?     @relation(fields: [executiveId], references: [id], onDelete: SetNull)
+  scheduledLitres Decimal        @db.Decimal(6, 2)
+  deliveredLitres Decimal?       @db.Decimal(6, 2)
+  status          DeliveryStatus @default(PENDING)
+  scheduledFor    DateTime
+  scannedAt       DateTime?
+  note            String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
   @@unique([customerId, scheduledFor])
   @@index([routeId, scheduledFor])
   @@index([executiveId, scheduledFor])
+  @@index([scheduledFor, status])
 }
 
 // ============================================================

@@ -20,10 +20,12 @@
   },
   "dependencies": {
     "@jharanai/shared": "*",
-    "@prisma/client": "^5.18.0"
+    "@prisma/client": "^5.18.0",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/qrcode": "^1.5.5",
     "prisma": "^5.18.0",
     "tsx": "^4.16.2",
     "typescript": "^5.4.0",

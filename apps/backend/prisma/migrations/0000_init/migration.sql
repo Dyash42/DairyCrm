@@ -8,6 +8,12 @@ CREATE TYPE "CustomerStatus" AS ENUM ('ACTIVE', 'PAUSED', 'CANCELLED');
 CREATE TYPE "SubscriptionStatus" AS ENUM ('ACTIVE', 'PAUSED', 'CANCELLED');
 
 -- CreateEnum
+CREATE TYPE "AutoResumeStatus" AS ENUM ('PENDING', 'REMINDED', 'RESUMED', 'FAILED', 'CANCELLED');
+
+-- CreateEnum
+CREATE TYPE "RenewalReminderStatus" AS ENUM ('PENDING', 'SENT', 'RENEWED', 'EXPIRED', 'CANCELLED');
+
+-- CreateEnum
 CREATE TYPE "PaymentMode" AS ENUM ('CASH', 'UPI_STATIC', 'UPI_ONLINE', 'CARD', 'OTHER');
 
 -- CreateEnum
@@ -114,10 +120,63 @@ CREATE TABLE "PauseRecord" (
     "customerId" TEXT NOT NULL,
     "startDate" TIMESTAMP(3) NOT NULL,
     "endDate" TIMESTAMP(3) NOT NULL,
+    "resumeDate" TIMESTAMP(3) NOT NULL,
+    "reminderSentAt" TIMESTAMP(3),
     "reason" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "PauseRecord_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "AutoResumeJob" (
+    "id" TEXT NOT NULL,
+    "pauseRecordId" TEXT NOT NULL,
+    "scheduledFor" TIMESTAMP(3) NOT NULL,
+    "status" "AutoResumeStatus" NOT NULL DEFAULT 'PENDING',
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "lastError" TEXT,
+    "remindedAt" TIMESTAMP(3),
+    "resumedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "AutoResumeJob_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "RenewalReminder" (
+    "id" TEXT NOT NULL,
+    "subscriptionId" TEXT NOT NULL,
+    "customerId" TEXT NOT NULL,
+    "dueDate" TIMESTAMP(3) NOT NULL,
+    "sentAt" TIMESTAMP(3),
+    "respondedAt" TIMESTAMP(3),
+    "status" "RenewalReminderStatus" NOT NULL DEFAULT 'PENDING',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "RenewalReminder_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "CustomerCodeCounter" (
+    "key" TEXT NOT NULL,
+    "lastValue" INTEGER NOT NULL DEFAULT 100454,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "CustomerCodeCounter_pkey" PRIMARY KEY ("key")
+);
+
+-- CreateTable
+CREATE TABLE "HolidayCalendar" (
+    "id" TEXT NOT NULL,
+    "date" DATE NOT NULL,
+    "reason" TEXT NOT NULL,
+    "scope" TEXT NOT NULL DEFAULT 'ALL',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "HolidayCalendar_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -229,6 +288,30 @@ CREATE INDEX "Subscription_customerId_status_idx" ON "Subscription"("customerId"
 CREATE INDEX "PauseRecord_subscriptionId_idx" ON "PauseRecord"("subscriptionId");
 
 -- CreateIndex
+CREATE INDEX "PauseRecord_startDate_endDate_idx" ON "PauseRecord"("startDate", "endDate");
+
+-- CreateIndex
+CREATE INDEX "PauseRecord_resumeDate_idx" ON "PauseRecord"("resumeDate");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AutoResumeJob_pauseRecordId_key" ON "AutoResumeJob"("pauseRecordId");
+
+-- CreateIndex
+CREATE INDEX "AutoResumeJob_status_scheduledFor_idx" ON "AutoResumeJob"("status", "scheduledFor");
+
+-- CreateIndex
+CREATE INDEX "RenewalReminder_status_dueDate_idx" ON "RenewalReminder"("status", "dueDate");
+
+-- CreateIndex
+CREATE INDEX "RenewalReminder_customerId_idx" ON "RenewalReminder"("customerId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "HolidayCalendar_date_key" ON "HolidayCalendar"("date");
+
+-- CreateIndex
+CREATE INDEX "HolidayCalendar_scope_date_idx" ON "HolidayCalendar"("scope", "date");
+
+-- CreateIndex
 CREATE INDEX "Payment_customerId_status_idx" ON "Payment"("customerId", "status");
 
 -- CreateIndex
@@ -236,6 +319,9 @@ CREATE INDEX "Delivery_routeId_scheduledFor_idx" ON "Delivery"("routeId", "sched
 
 -- CreateIndex
 CREATE INDEX "Delivery_executiveId_scheduledFor_idx" ON "Delivery"("executiveId", "scheduledFor");
+
+-- CreateIndex
+CREATE INDEX "Delivery_scheduledFor_status_idx" ON "Delivery"("scheduledFor", "status");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Delivery_customerId_scheduledFor_key" ON "Delivery"("customerId", "scheduledFor");
@@ -263,6 +349,15 @@ ALTER TABLE "PauseRecord" ADD CONSTRAINT "PauseRecord_subscriptionId_fkey" FOREI
 
 -- AddForeignKey
 ALTER TABLE "PauseRecord" ADD CONSTRAINT "PauseRecord_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "AutoResumeJob" ADD CONSTRAINT "AutoResumeJob_pauseRecordId_fkey" FOREIGN KEY ("pauseRecordId") REFERENCES "PauseRecord"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "RenewalReminder" ADD CONSTRAINT "RenewalReminder_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "Subscription"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "RenewalReminder" ADD CONSTRAINT "RenewalReminder_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Payment" ADD CONSTRAINT "Payment_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;

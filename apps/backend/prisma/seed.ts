@@ -134,6 +134,30 @@ async function main() {
   }
   console.log(`[seed] customers: ${CUSTOMERS.length}`);
 
+  // --- Customer code counter --- seed so newly-generated codes don't collide
+  // with our hand-picked seed codes (which go up to JHR-100712).
+  await prisma.customerCodeCounter.upsert({
+    where: { key: 'customer' },
+    create: { key: 'customer', lastValue: 100712 },
+    update: { lastValue: 100712 },
+  });
+  console.log('[seed] customer code counter: 100712 (next code will be JHR-100713)');
+
+  // --- Holiday calendar --- a couple of well-known Indian festivals
+  const holidays = [
+    { date: new Date('2026-08-15'), reason: 'Independence Day' },
+    { date: new Date('2026-10-02'), reason: 'Gandhi Jayanti' },
+    { date: new Date('2026-11-08'), reason: 'Diwali' },
+  ];
+  for (const h of holidays) {
+    await prisma.holidayCalendar.upsert({
+      where: { date: h.date },
+      create: { ...h, scope: 'ALL' },
+      update: { reason: h.reason },
+    });
+  }
+  console.log(`[seed] holidays: ${holidays.length}`);
+
   console.log('[seed] done.');
 }
 

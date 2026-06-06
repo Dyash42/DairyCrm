@@ -292,3 +292,81 @@ export function getInitials(name: string): string {
     .map((s) => s[0]?.toUpperCase() ?? '')
     .join('');
 }
+
+// ---------- Broadcasts (mock history) ----------
+export type BroadcastTarget = 'ALL' | 'ROUTES' | 'CUSTOMERS';
+export type BroadcastStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'FAILED';
+
+export interface BroadcastRecord {
+  id: string;
+  message: string;
+  target: BroadcastTarget;
+  routeIds?: string[];
+  scheduledFor?: string;
+  sentAt?: string;
+  status: BroadcastStatus;
+  sentCount: number;
+  deliveredCount: number;
+  failedCount: number;
+}
+
+export const broadcasts: BroadcastRecord[] = [
+  {
+    id: 'b1',
+    message:
+      'Heads up — heavy rain forecast tomorrow morning. Deliveries on Route 1 & 4 may be delayed by 30 mins.',
+    target: 'ROUTES',
+    routeIds: ['r1', 'r4'],
+    sentAt: '2026-05-30T05:30:00Z',
+    status: 'SENT',
+    sentCount: 164,
+    deliveredCount: 161,
+    failedCount: 3,
+  },
+  {
+    id: 'b2',
+    message:
+      "Holiday notice — there will be no deliveries on 28 May (Buddha Purnima). Subscriptions auto-skip.",
+    target: 'ALL',
+    sentAt: '2026-05-26T03:15:00Z',
+    status: 'SENT',
+    sentCount: 412,
+    deliveredCount: 408,
+    failedCount: 4,
+  },
+  {
+    id: 'b3',
+    message: 'Festival offer — refer a friend and get ₹100 off your next bill.',
+    target: 'CUSTOMERS',
+    scheduledFor: '2026-06-05T04:00:00Z',
+    status: 'SCHEDULED',
+    sentCount: 0,
+    deliveredCount: 0,
+    failedCount: 0,
+  },
+];
+
+// ---------- Billing (mock invoices) ----------
+export interface InvoiceRecord {
+  id: string;
+  customerName: string;
+  customerCode: string;
+  routeName: string;
+  period: string; // "May 2026"
+  litres: number;
+  amount: number;
+  paid: boolean;
+  paidVia?: 'CASH' | 'UPI_STATIC' | 'UPI_ONLINE';
+}
+
+export const invoices: InvoiceRecord[] = [
+  { id: 'i1', customerName: 'Sunil Pradhan',     customerCode: 'JHR-100455', routeName: 'Route 4', period: 'May 2026', litres: 62, amount: 3968, paid: true,  paidVia: 'UPI_ONLINE' },
+  { id: 'i2', customerName: 'Subhransu Behera',  customerCode: 'JHR-100482', routeName: 'Route 3', period: 'May 2026', litres: 31, amount: 1984, paid: true,  paidVia: 'CASH' },
+  { id: 'i3', customerName: 'Anita Sahoo',       customerCode: 'JHR-100390', routeName: 'Route 4', period: 'May 2026', litres: 31, amount: 1984, paid: true,  paidVia: 'UPI_STATIC' },
+  { id: 'i4', customerName: 'Lopamudra Das',     customerCode: 'JHR-100214', routeName: 'Route 4', period: 'May 2026', litres: 46, amount: 2944, paid: false },
+  { id: 'i5', customerName: 'Rabindra Mohanty',  customerCode: 'JHR-100377', routeName: 'Route 1', period: 'May 2026', litres: 62, amount: 3968, paid: true,  paidVia: 'CASH' },
+  { id: 'i6', customerName: 'Priyanka Behera',   customerCode: 'JHR-100620', routeName: 'Route 2', period: 'May 2026', litres: 31, amount: 1984, paid: true,  paidVia: 'UPI_ONLINE' },
+  { id: 'i7', customerName: 'Susanta Nayak',     customerCode: 'JHR-100118', routeName: 'Route 5', period: 'May 2026', litres: 124, amount: 7936, paid: true, paidVia: 'CASH' },
+  { id: 'i8', customerName: 'Gayatri Panda',     customerCode: 'JHR-100712', routeName: 'Route 1', period: 'May 2026', litres: 77, amount: 4928, paid: false },
+  { id: 'i9', customerName: 'Sasmita Jena',      customerCode: 'JHR-100644', routeName: 'Route 5', period: 'May 2026', litres: 46, amount: 2944, paid: false },
+];

@@ -6,11 +6,15 @@ import { Banknote, ExternalLink, Receipt } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
 import { StatusPill } from '@/components/ui/StatusPill';
-import { fetchPayments } from '@/lib/api';
+import {
+  fetchPayments,
+  PAYMENT_MODE_LABEL,
+  type PaymentMode,
+} from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { formatINR } from '@jharanai/shared';
 
-type ModeFilter = 'ALL' | 'CASH' | 'UPI' | 'CARD' | 'NETBANKING' | 'WALLET';
+type ModeFilter = 'ALL' | PaymentMode;
 
 export default function PaymentsPage() {
   const [modeFilter, setModeFilter] = useState<ModeFilter>('ALL');
@@ -103,11 +107,11 @@ export default function PaymentsPage() {
               className="input"
             >
               <option value="ALL">All modes</option>
-              <option value="CASH">Cash</option>
-              <option value="UPI">UPI</option>
-              <option value="CARD">Card</option>
-              <option value="NETBANKING">Net banking</option>
-              <option value="WALLET">Wallet</option>
+              <option value="CASH">{PAYMENT_MODE_LABEL.CASH}</option>
+              <option value="UPI_STATIC">{PAYMENT_MODE_LABEL.UPI_STATIC}</option>
+              <option value="UPI_ONLINE">{PAYMENT_MODE_LABEL.UPI_ONLINE}</option>
+              <option value="CARD">{PAYMENT_MODE_LABEL.CARD}</option>
+              <option value="OTHER">{PAYMENT_MODE_LABEL.OTHER}</option>
             </select>
           </div>
           <div className="overflow-hidden">
@@ -137,7 +141,7 @@ export default function PaymentsPage() {
                         <ExternalLink size={11} />
                       </Link>
                     </td>
-                    <td>{p.mode}</td>
+                    <td>{PAYMENT_MODE_LABEL[p.mode] ?? p.mode}</td>
                     <td>
                       <StatusPill
                         tone={

@@ -286,12 +286,26 @@ export function cancelSubscription(id: string) {
 }
 
 // ----------------------- Payments -----------------------
+/**
+ * Mirrors the backend `PaymentMode` enum exactly.
+ * Don't add UI-only modes here — add them to the Prisma enum first.
+ */
+export type PaymentMode = 'CASH' | 'UPI_STATIC' | 'UPI_ONLINE' | 'CARD' | 'OTHER';
+
+export const PAYMENT_MODE_LABEL: Record<PaymentMode, string> = {
+  CASH: 'Cash',
+  UPI_STATIC: 'UPI (QR)',
+  UPI_ONLINE: 'UPI (online)',
+  CARD: 'Card',
+  OTHER: 'Other',
+};
+
 export interface PaymentRow {
   id: string;
   customerId: string;
   amount: string | number;
-  mode: 'CASH' | 'UPI' | 'CARD' | 'NETBANKING' | 'WALLET';
-  status: 'PENDING' | 'PAID' | 'FAILED';
+  mode: PaymentMode;
+  status: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
   reference: string | null;
   paidAt: string | null;
   createdAt: string;
@@ -308,7 +322,7 @@ export function fetchPayments(params: { customerId?: string; limit?: number } = 
 export function recordCashPayment(input: {
   customerId: string;
   amount: number;
-  mode: PaymentRow['mode'];
+  mode: PaymentMode;
   reference?: string;
   paidAt?: string;
 }) {

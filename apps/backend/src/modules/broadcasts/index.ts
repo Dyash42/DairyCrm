@@ -27,6 +27,19 @@ const CreateBody = z.object({
   scheduledFor: z.coerce.date().optional(),
 });
 
+/**
+ * Resolve a broadcast's audience into a flat list of phones.
+ *
+ * Supported targets:
+ *   ALL     — every active customer
+ *   ROUTES  — every active customer on one of the given route ids
+ *
+ * NOT YET WIRED (the validator rejects it before we get here):
+ *   CUSTOMERS — per-customer targeting. Schema needs a customerIds array
+ *               (or BroadcastCustomer join) before this can be supported.
+ *               The enum value stays so we can land the feature without a
+ *               schema enum migration.
+ */
 async function resolveRecipientPhones(
   target: BroadcastTarget,
   routeIds: string[],
@@ -70,6 +83,18 @@ export async function registerBroadcastRoutes(app: App) {
     handler: async (req, reply) => {
       const body = req.body as z.infer<typeof CreateBody>;
       const me = req.user;
+
+      // Guard against the unwired target until the schema column lands.
+      // Without this, picking CUSTOMERS would silently broadcast to ALL,
+      // which is worse than a clear error message.
+      if (body.target === BroadcastTarget.CUSTOMERS) {
+        return reply.status(422).send({
+          error: 'NotImplemented',
+          message:
+            'Per-customer broadcasts are not yet supported. Pick ALL or ROUTES for now.',
+        });
+      }
+
       const status = body.scheduledFor
         ? BroadcastStatus.SCHEDULED
         : BroadcastStatus.DRAFT;

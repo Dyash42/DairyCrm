@@ -395,6 +395,10 @@ model Delivery {
   scheduledFor    DateTime
   scannedAt       DateTime?
   note            String?
+  /// When the post-scan WhatsApp confirmation went out. NULL = not yet sent.
+  /// Used by the delivery-confirm cron as a proper idempotency flag (replaces
+  /// the old `[wa-sent]` marker that lived inside `note`).
+  confirmationSentAt DateTime?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -402,6 +406,7 @@ model Delivery {
   @@index([routeId, scheduledFor])
   @@index([executiveId, scheduledFor])
   @@index([scheduledFor, status])
+  @@index([status, confirmationSentAt])
 }
 
 // ============================================================

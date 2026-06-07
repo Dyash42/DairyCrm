@@ -27,6 +27,8 @@ import {
   resumeSubscription,
   cancelSubscription,
   recordCashPayment,
+  PAYMENT_MODE_LABEL,
+  type PaymentMode,
   ApiError,
 } from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
@@ -546,7 +548,7 @@ function RecordPaymentModal({
 }) {
   const [form, setForm] = useState({
     amount: '',
-    mode: 'CASH' as 'CASH' | 'UPI' | 'CARD' | 'NETBANKING' | 'WALLET',
+    mode: 'CASH' as PaymentMode,
     reference: '',
   });
   const [submitting, setSubmitting] = useState(false);
@@ -616,15 +618,15 @@ function RecordPaymentModal({
           <select
             value={form.mode}
             onChange={(e) =>
-              setForm((f) => ({ ...f, mode: e.target.value as typeof f.mode }))
+              setForm((f) => ({ ...f, mode: e.target.value as PaymentMode }))
             }
             className="input w-full mt-1.5"
           >
-            <option value="CASH">Cash</option>
-            <option value="UPI">UPI</option>
-            <option value="CARD">Card</option>
-            <option value="NETBANKING">Net banking</option>
-            <option value="WALLET">Wallet</option>
+            <option value="CASH">{PAYMENT_MODE_LABEL.CASH}</option>
+            <option value="UPI_STATIC">{PAYMENT_MODE_LABEL.UPI_STATIC}</option>
+            <option value="UPI_ONLINE">{PAYMENT_MODE_LABEL.UPI_ONLINE}</option>
+            <option value="CARD">{PAYMENT_MODE_LABEL.CARD}</option>
+            <option value="OTHER">{PAYMENT_MODE_LABEL.OTHER}</option>
           </select>
         </label>
         <label className="block">

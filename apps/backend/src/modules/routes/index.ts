@@ -124,14 +124,40 @@ export async function registerRouteRoutes(app: App) {
       const { id } = req.params as { id: string };
       const { executiveId } = req.body as z.infer<typeof AssignBody>;
 
-      // Unassign whoever is currently on this route
-      const prev = await prisma.executive.findFirst({ where: { routeId: id } });
-      if (prev && prev.id !== executiveId) {
-        await prisma.executive.update({ where: { id: prev.id }, data: { routeId: null } });
+      // Whole reassignment runs in one transaction. Otherwise two admins
+      // assigning concurrently could leave the route with two execs
+      // pointing at it (or orphan both). Executive.routeId has @unique
+      // so collisions surface as a unique-constraint error — convert to
+      // a 409 the admin UI can show.
+      try {
+        await prisma.$transaction(async (tx) => {
+          const prev = await tx.executive.findFirst({ where: { routeId: id } });
+          if (prev && prev.id !== executiveId) {
+            await tx.executive.update({
+              where: { id: prev.id },
+              data: { routeId: null },
+            });
+          }
+          if (executiveId) {
+            // If the new exec is already on another route, clear it
+            // first inside the same tx so the assignment can land.
+            await tx.executive.update({
+              where: { id: executiveId },
+              data: { routeId: id },
+            });
+          }
+        });
+      } catch (e: unknown) {
+        const code = (e as { code?: string }).code;
+        if (code === 'P2002') {
+          return reply.status(409).send({
+            error: 'Conflict',
+            message: 'Executive is already assigned to another route',
+          });
+        }
+        throw e;
       }
-      if (executiveId) {
-        await prisma.executive.update({ where: { id: executiveId }, data: { routeId: id } });
-      }
+
       const route = await prisma.route.findUnique({
         where: { id },
         include: { executive: { include: { user: true } } },

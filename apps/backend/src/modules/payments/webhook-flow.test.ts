@@ -28,63 +28,45 @@ const payments = new Map<string, PaymentRow>();
 const customers = new Map<string, CustomerRow>();
 
 vi.mock('../../prisma', () => {
-  return {
-    prisma: {
-      payment: {
-        async findFirst({ where }: { where: { reference: string } }) {
-          for (const p of payments.values()) {
-            if (p.reference === where.reference) return p;
-          }
-          return null;
-        },
-        async update({ where, data }: { where: { id: string }; data: Partial<PaymentRow> }) {
-          const row = payments.get(where.id);
-          if (!row) return null;
-          const next = { ...row, ...data };
-          payments.set(where.id, next);
-          return next;
-        },
-      },
-      customer: {
-        async update({ where, data }: { where: { id: string }; data: { balance?: { increment: number } } }) {
-          const c = customers.get(where.id);
-          if (!c) return null;
-          if (data.balance?.increment !== undefined) {
-            c.balance += data.balance.increment;
-          }
-          customers.set(where.id, c);
-          return c;
-        },
-      },
-      // $transaction just calls the callback with the prisma surface
-      async $transaction<T>(cb: (tx: unknown) => Promise<T>) {
-        // re-import the mocked prisma object — we need a stable reference
-        // Use the same object we exported via the closure.
-        return cb({
-          payment: {
-            update: async ({ where, data }: any) => {
-              const row = payments.get(where.id);
-              if (!row) return null;
-              const next = { ...row, ...data };
-              payments.set(where.id, next);
-              return next;
-            },
-          },
-          customer: {
-            update: async ({ where, data }: any) => {
-              const c = customers.get(where.id);
-              if (!c) return null;
-              if (data.balance?.increment !== undefined) {
-                c.balance += data.balance.increment;
-              }
-              customers.set(where.id, c);
-              return c;
-            },
-          },
-        });
+  // The handler now looks up the latest PENDING payment by reference (so
+  // the test's findFirst mock has to filter by status), then runs the
+  // PAID flip inside $transaction. Both the outer mock and the tx-shaped
+  // object passed to $transaction need the same interface.
+  function findFirst({ where, orderBy: _o }: any) {
+    for (const p of payments.values()) {
+      if (p.reference !== where.reference) continue;
+      if (where.status && p.status !== where.status) continue;
+      return p;
+    }
+    return null;
+  }
+  const prismaMock: any = {
+    payment: {
+      findFirst: async (q: any) => findFirst(q),
+      update: async ({ where, data }: any) => {
+        const row = payments.get(where.id);
+        if (!row) return null;
+        const next: PaymentRow = { ...row, ...data };
+        payments.set(where.id, next);
+        return next;
       },
     },
+    customer: {
+      update: async ({ where, data }: any) => {
+        const c = customers.get(where.id);
+        if (!c) return null;
+        if (data.balance?.increment !== undefined) {
+          c.balance += Number(data.balance.increment);
+        }
+        customers.set(where.id, c);
+        return c;
+      },
+    },
+    async $transaction<T>(cb: (tx: unknown) => Promise<T>) {
+      return cb(prismaMock);
+    },
   };
+  return { prisma: prismaMock };
 });
 
 import { registerPaymentRoutes } from './index';
@@ -137,10 +119,13 @@ beforeEach(() => {
 describe('POST /payments/webhook — Razorpay flow', () => {
   it('marks payment PAID and credits the customer when the signature is valid', async () => {
     customers.set('cust1', { id: 'cust1', balance: 0 });
+    // The pre-created Payment row carries the EXPECTED amount. Webhook
+    // must verify the event's amount matches before crediting — this
+    // blocks "forged amount via valid signature on unrelated event".
     payments.set('pay1', {
       id: 'pay1',
       customerId: 'cust1',
-      amount: 0,
+      amount: 192,
       status: 'PENDING',
       reference: 'plink_xyz',
       paidAt: null,
@@ -169,6 +154,9 @@ describe('POST /payments/webhook — Razorpay flow', () => {
 
     expect(res.statusCode).toBe(200);
     expect(payments.get('pay1')?.status).toBe('PAID');
+    // We credit by the Payment.amount we already trust (set at creation),
+    // not by the event-supplied number — so the row's amount is unchanged
+    // and the balance increments by exactly what was expected.
     expect(payments.get('pay1')?.amount).toBe(192);
     expect(customers.get('cust1')?.balance).toBe(192);
   });
@@ -189,7 +177,7 @@ describe('POST /payments/webhook — Razorpay flow', () => {
     payments.set('pay1', {
       id: 'pay1',
       customerId: 'cust1',
-      amount: 0,
+      amount: 50,
       status: 'PENDING',
       reference: 'plink_abc',
       paidAt: null,

@@ -10,6 +10,8 @@
  *   app.requireRole(...) — requires one of the listed roles
  */
 
+import crypto from 'node:crypto';
+
 import bcrypt from 'bcryptjs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -19,6 +21,9 @@ import { OTP_EXPIRY_MS, OTP_LENGTH, RATE_LIMITS } from '../../constants';
 import { getSmsProvider } from '../../providers/sms';
 import { normalizePhone } from '../../utils/phone';
 import type { App } from '../../types';
+
+/** Max wrong OTP attempts per phone before the code is invalidated. */
+const MAX_OTP_ATTEMPTS = 5;
 
 // ----------------------- Token payload + decorators -----------------------
 
@@ -72,16 +77,32 @@ export async function registerAuthDecorators(app: App) {
 // ----------------------- In-process OTP store (dev fallback) -----------------------
 
 /**
- * Phone → { code, expiresAt }.
+ * Phone → { code, expiresAt, attempts }.
  * In production: store in Redis with the same shape so cross-process
  * verification works. Swap the implementation; the contract stays the same.
  */
-const otpStore = new Map<string, { code: string; expiresAt: number }>();
+const otpStore = new Map<
+  string,
+  { code: string; expiresAt: number; attempts: number }
+>();
 
 function genOtp(): string {
+  // crypto.randomInt is uniform + cryptographically secure. Math.random is
+  // neither — an attacker who watches enough generated codes can predict
+  // the next one (V8 uses xorshift128+).
   const min = 10 ** (OTP_LENGTH - 1);
   const max = 10 ** OTP_LENGTH;
-  return String(Math.floor(min + Math.random() * (max - min)));
+  return String(crypto.randomInt(min, max));
+}
+
+/** Constant-time string comparison — no early return on first mismatch. */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
 }
 
 async function sendOtp(phone: string, code: string): Promise<void> {
@@ -139,6 +160,7 @@ export async function registerAuthRoutes(app: App) {
       otpStore.set(normalized, {
         code,
         expiresAt: Date.now() + OTP_EXPIRY_MS,
+        attempts: 0,
       });
       await sendOtp(normalized, code);
       return { ok: true };
@@ -154,7 +176,21 @@ export async function registerAuthRoutes(app: App) {
       const { phone, code } = req.body as { phone: string; code: string };
       const normalized = normalizePhone(phone);
       const record = otpStore.get(normalized);
-      if (!record || record.expiresAt < Date.now() || record.code !== code) {
+      if (!record || record.expiresAt < Date.now()) {
+        otpStore.delete(normalized);
+        return reply.status(401).send({ error: 'Invalid or expired OTP' });
+      }
+      // Increment attempts BEFORE comparing — protects against the
+      // attacker giving up halfway through a brute-force burst.
+      record.attempts += 1;
+      if (record.attempts > MAX_OTP_ATTEMPTS) {
+        otpStore.delete(normalized);
+        return reply.status(429).send({
+          error: 'Too many attempts. Please request a fresh OTP.',
+        });
+      }
+      if (!safeEqual(record.code, code)) {
+        otpStore.set(normalized, record); // persist the bumped attempts
         return reply.status(401).send({ error: 'Invalid or expired OTP' });
       }
       otpStore.delete(normalized);

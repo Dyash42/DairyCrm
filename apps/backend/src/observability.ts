@@ -33,7 +33,10 @@ export async function initObservability(): Promise<void> {
     Sentry.init({
       dsn,
       environment: loadConfig().NODE_ENV,
-      tracesSampleRate: 0.1,
+      // Env-configurable so we can crank up to 1.0 right after a deploy
+      // and bring it back down once things are stable. Free Sentry tier
+      // dies fast at 0.1 once traffic ramps.
+      tracesSampleRate: loadConfig().SENTRY_TRACES_SAMPLE_RATE,
     });
     // eslint-disable-next-line no-console
     console.log('[observability] Sentry initialized');

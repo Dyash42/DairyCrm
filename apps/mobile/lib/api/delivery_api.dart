@@ -69,6 +69,38 @@ class DeliveryApi {
     });
   }
 
+  /// Submit the end-of-day report. The backend computes the authoritative
+  /// totals (counts, litres, cash collected) from confirmed deliveries +
+  /// payments — what the milkman sends is just their tally for variance
+  /// reporting, plus optional notes.
+  Future<EndOfDayReport> submitEndOfDay({
+    double? reportedCashTotal,
+    String? notes,
+  }) {
+    return mapApi(() async {
+      final res = await _dio.post('/deliveries/end-of-day', data: {
+        if (reportedCashTotal != null) 'reportedCashTotal': reportedCashTotal,
+        if (notes != null && notes.isNotEmpty) 'notes': notes,
+      });
+      final data = res.data as Map<String, dynamic>;
+      final counts = (data['counts'] ?? const {}) as Map<String, dynamic>;
+      final litres = (data['litres'] ?? const {}) as Map<String, dynamic>;
+      final cash = (data['cash'] ?? const {}) as Map<String, dynamic>;
+      return EndOfDayReport(
+        date: data['date']?.toString() ?? '',
+        delivered: (counts['delivered'] as num?)?.toInt() ?? 0,
+        partial: (counts['partial'] as num?)?.toInt() ?? 0,
+        skipped: (counts['skipped'] as num?)?.toInt() ?? 0,
+        pending: (counts['pending'] as num?)?.toInt() ?? 0,
+        litresScheduled: _num(litres['scheduled']),
+        litresDelivered: _num(litres['delivered']),
+        cashCollected: _num(cash['collected']),
+        cashReported: cash['reported'] == null ? null : _num(cash['reported']),
+        cashVariance: cash['variance'] == null ? null : _num(cash['variance']),
+      );
+    });
+  }
+
   /// Resolve a scanned QR payload (`JHR-XXXXXX`) → customer summary.
   /// Used by the scanner screen to surface the customer name before
   /// opening the confirm sheet.
@@ -105,4 +137,30 @@ double _num(dynamic v) {
   if (v is num) return v.toDouble();
   if (v is String) return double.tryParse(v) ?? 0;
   return 0;
+}
+
+class EndOfDayReport {
+  EndOfDayReport({
+    required this.date,
+    required this.delivered,
+    required this.partial,
+    required this.skipped,
+    required this.pending,
+    required this.litresScheduled,
+    required this.litresDelivered,
+    required this.cashCollected,
+    required this.cashReported,
+    required this.cashVariance,
+  });
+
+  final String date;
+  final int delivered;
+  final int partial;
+  final int skipped;
+  final int pending;
+  final double litresScheduled;
+  final double litresDelivered;
+  final double cashCollected;
+  final double? cashReported;
+  final double? cashVariance;
 }

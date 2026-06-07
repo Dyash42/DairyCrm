@@ -13,6 +13,8 @@
 
 import { z } from 'zod';
 
+const DEV_JWT_SECRET = 'dev-secret-change-me-min-16-chars-long';
+
 const Schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -22,7 +24,7 @@ const Schema = z.object({
   DIRECT_URL: z.string().min(1).optional(),
 
   // --- Auth ---
-  JWT_SECRET: z.string().min(16).default('dev-secret-change-me-min-16-chars-long'),
+  JWT_SECRET: z.string().min(16).default(DEV_JWT_SECRET),
   JWT_EXPIRES_IN: z.string().default('7d'),
 
   // --- Redis ---
@@ -35,6 +37,13 @@ const Schema = z.object({
   META_VERIFY_TOKEN: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
   META_GRAPH_VERSION: z.string().default('v20.0'),
+  /**
+   * When `META_APP_SECRET` is unset, signature verification can't run. In
+   * production we hard-fail; in dev/staging set this to '1' to explicitly
+   * accept unsigned bodies (NEVER do this with a real Meta app subscribed
+   * to your endpoint — anyone can inject events).
+   */
+  ALLOW_UNSIGNED_WEBHOOK: z.enum(['0', '1']).default('0'),
 
   // --- Payments ---
   /** Explicit pick; otherwise auto-detected by which keys are set. */
@@ -68,9 +77,19 @@ const Schema = z.object({
   S3_ACCESS_KEY: z.string().optional(),
   S3_SECRET_KEY: z.string().optional(),
   S3_ENDPOINT: z.string().optional(),
+  /** Public base URL when STORAGE_PROVIDER=local. Used to surface QR URLs
+   *  in admin without exposing local file paths. */
+  LOCAL_STORAGE_PUBLIC_BASE: z.string().optional(),
 
   // --- Observability ---
   SENTRY_DSN: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
+  /**
+   * Business timezone — every "today" boundary, "MON_TO_SAT", and
+   * scheduling decision uses this. Default IST since the dairy operates
+   * out of Berhampur, Odisha. Override per-environment if needed.
+   */
+  BUSINESS_TZ: z.string().default('Asia/Kolkata'),
 
   // --- Admin (CORS origin for the web admin) ---
   ADMIN_ORIGIN: z.string().default('http://localhost:3001'),
@@ -87,6 +106,21 @@ export function loadConfig(): AppConfig {
     // eslint-disable-next-line no-console
     console.error('[config] env validation failed:', parsed.error.format());
     process.exit(1);
+  }
+  // Hard production guardrails — running prod with the dev JWT secret means
+  // every JWT is forgeable. Booting without a DB means every request
+  // crashes at the first query. Fail fast before traffic arrives.
+  if (parsed.data.NODE_ENV === 'production') {
+    const fatal: string[] = [];
+    if (!parsed.data.DATABASE_URL) fatal.push('DATABASE_URL is required in production');
+    if (parsed.data.JWT_SECRET === DEV_JWT_SECRET) {
+      fatal.push('JWT_SECRET must be set to a non-default value in production');
+    }
+    if (fatal.length > 0) {
+      // eslint-disable-next-line no-console
+      console.error('[config] refusing to boot in production:', fatal);
+      process.exit(1);
+    }
   }
   cached = parsed.data;
   return cached;

@@ -85,6 +85,7 @@ export class CashfreePaymentProvider implements PaymentProvider {
   verifyWebhookSignature(rawBody: string, signature: string): boolean {
     const c = loadConfig();
     if (!c.CASHFREE_WEBHOOK_SECRET) return false;
+    if (!signature) return false;
     // Cashfree concatenates timestamp + body before HMAC; in production we
     // also pass the timestamp from the header. For now we accept just the
     // body version — the verifier in the webhook route will supply the
@@ -93,6 +94,14 @@ export class CashfreePaymentProvider implements PaymentProvider {
       .createHmac('sha256', c.CASHFREE_WEBHOOK_SECRET)
       .update(rawBody, 'utf8')
       .digest('base64');
-    return expected === signature;
+    // Length-guard first — timingSafeEqual throws on mismatched lengths.
+    // Constant-time compare prevents secret exfiltration via timing oracle
+    // (plain `===` short-circuits on first mismatching byte).
+    if (expected.length !== signature.length) return false;
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    } catch {
+      return false;
+    }
   }
 }

@@ -11,6 +11,9 @@ function clearAllEnv() {
     'META_ACCESS_TOKEN',
     'META_APP_SECRET',
     'NODE_ENV',
+    'ALLOW_UNSIGNED_WEBHOOK',
+    'DATABASE_URL',
+    'JWT_SECRET',
   ]) {
     delete process.env[k];
   }
@@ -46,15 +49,35 @@ describe('Meta webhook signature verification', () => {
   beforeEach(() => clearAllEnv());
   afterEach(() => clearAllEnv());
 
-  it('fails closed in production with no secret', () => {
-    process.env.NODE_ENV = 'production';
+  it('fails closed in dev/staging with no secret and no ALLOW_UNSIGNED_WEBHOOK', () => {
+    // Default (ALLOW_UNSIGNED_WEBHOOK unset → '0'): even in dev we reject
+    // unsigned webhooks. Staging is internet-exposed; the previous
+    // NODE_ENV-only gate let anyone inject events.
+    process.env.NODE_ENV = 'development';
     _resetConfigForTests();
     expect(new MetaMessagingProvider().verifyWebhookSignature('{}', undefined)).toBe(false);
   });
 
-  it('passes in dev with no secret (so curl works)', () => {
+  it('accepts unsigned webhooks in dev ONLY when ALLOW_UNSIGNED_WEBHOOK=1', () => {
     process.env.NODE_ENV = 'development';
+    process.env.ALLOW_UNSIGNED_WEBHOOK = '1';
     _resetConfigForTests();
     expect(new MetaMessagingProvider().verifyWebhookSignature('{}', undefined)).toBe(true);
+    delete process.env.ALLOW_UNSIGNED_WEBHOOK;
+  });
+
+  it('refuses unsigned webhooks in production even with ALLOW_UNSIGNED_WEBHOOK=1', () => {
+    // Production guardrail: the flag is dev-only. We have to satisfy the
+    // boot guards (DATABASE_URL + non-default JWT_SECRET) just to load
+    // config without exiting.
+    process.env.NODE_ENV = 'production';
+    process.env.DATABASE_URL = 'postgresql://test';
+    process.env.JWT_SECRET = 'a-real-non-default-jwt-secret-here';
+    process.env.ALLOW_UNSIGNED_WEBHOOK = '1';
+    _resetConfigForTests();
+    expect(new MetaMessagingProvider().verifyWebhookSignature('{}', undefined)).toBe(false);
+    delete process.env.DATABASE_URL;
+    delete process.env.JWT_SECRET;
+    delete process.env.ALLOW_UNSIGNED_WEBHOOK;
   });
 });

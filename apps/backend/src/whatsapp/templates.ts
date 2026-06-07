@@ -75,6 +75,16 @@ export const TEMPLATES = {
     variables: ['name'],
   },
 
+  // ---------- Renewal reminder (sent N days before subscription expiry) ----------
+  renewal_reminder: {
+    name: 'renewal_reminder',
+    category: 'UTILITY',
+    language: 'en',
+    body:
+      "Hi {{1}}, your milk subscription ends on {{2}}. Reply RENEW to continue without interruption — it takes 30 seconds.",
+    variables: ['name', 'end_date'],
+  },
+
   // ---------- Renew ----------
   renew_ask_days: {
     name: 'renew_ask_days',

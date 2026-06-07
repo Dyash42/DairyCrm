@@ -15,6 +15,8 @@
  */
 
 import type { WeekdayNumber } from './subscription-calc';
+import { weekdayInTz } from '../utils/dates';
+import { loadConfig } from '../config';
 
 // ---------- repo contract (injectable) ----------
 
@@ -63,7 +65,12 @@ export async function getDeliveriesForDate(
   repo: ScheduleRepo,
 ): Promise<ScheduledDelivery[]> {
   const day = startOfDayUTC(date);
-  const weekday = day.getUTCDay() as WeekdayNumber;
+  // Compute weekday in the BUSINESS timezone, not UTC. UTC midnight in
+  // India is 05:30 IST the SAME calendar day — but if scheduling ever
+  // runs near the day boundary or against a date pulled from the DB
+  // (already UTC midnight), the IST weekday is what the customer sees.
+  const tz = loadConfig().BUSINESS_TZ;
+  const weekday = weekdayInTz(day, tz) as WeekdayNumber;
 
   const [subs, pauses] = await Promise.all([
     repo.listSubscriptionsActiveOn(day),

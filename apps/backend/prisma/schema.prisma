@@ -326,13 +326,20 @@ model QrCode {
 }
 
 /// No-delivery days. The scheduling engine filters scheduledFor against this.
+///
+/// The unique constraint is composite (date + scope) so we can have:
+///   - A platform-wide holiday on 26 Jan with scope='ALL'
+///   - A route-specific holiday on the same day for one route
+/// The previous schema had `date` uniquely indexed alone, which silently
+/// overwrote the ALL row when an admin added a route-specific holiday.
 model HolidayCalendar {
   id        String   @id @default(cuid())
-  date      DateTime @unique @db.Date
+  date      DateTime @db.Date
   reason    String
   scope     String   @default("ALL") // 'ALL' or route id (route-specific holiday)
   createdAt DateTime @default(now())
 
+  @@unique([date, scope])
   @@index([scope, date])
 }
 

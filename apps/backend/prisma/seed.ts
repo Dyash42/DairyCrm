@@ -151,7 +151,7 @@ async function main() {
   ];
   for (const h of holidays) {
     await prisma.holidayCalendar.upsert({
-      where: { date: h.date },
+      where: { date_scope: { date: h.date, scope: 'ALL' } },
       create: { ...h, scope: 'ALL' },
       update: { reason: h.reason },
     });

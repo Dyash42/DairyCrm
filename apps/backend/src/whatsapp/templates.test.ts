@@ -23,6 +23,7 @@ describe('templates', () => {
       'support_close',
       'delivery_confirmation',
       'broadcast_route_update',
+      'renewal_reminder',
     ];
     for (const name of required) {
       expect(TEMPLATES).toHaveProperty(name);
@@ -52,6 +53,7 @@ describe('templates', () => {
         "renew_ask_days",
         "renew_confirmed",
         "renew_quote",
+        "renewal_reminder",
         "resume_ask",
         "resume_done",
         "subscription_activated",

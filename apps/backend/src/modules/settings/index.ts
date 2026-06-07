@@ -56,10 +56,12 @@ export async function registerSettingsRoutes(app: App) {
   app.post('/holidays', {
     handler: async (req, reply) => {
       const body = HolidayBody.parse(req.body);
+      // Composite key (date, scope) lets ALL-scope and route-scoped
+      // holidays coexist on the same calendar date.
       const row = await prisma.holidayCalendar.upsert({
-        where: { date: body.date },
+        where: { date_scope: { date: body.date, scope: body.scope ?? 'ALL' } },
         create: body,
-        update: { reason: body.reason, scope: body.scope },
+        update: { reason: body.reason },
       });
       return reply.status(201).send(row);
     },
@@ -117,12 +119,28 @@ export async function registerSettingsRoutes(app: App) {
         detail: string;
       }> = [];
 
+      // QR rows store the revoker as a raw User.id. Look up names in a
+      // single batch so the audit table shows "Sunil Pradhan" instead of
+      // "clxxxxxxxxxxxxx". Falls back to the UUID if the user has been
+      // deleted since.
+      const revokerIds = Array.from(
+        new Set(revokedQrs.map((q) => q.revokedBy).filter((s): s is string => !!s)),
+      );
+      const revokerUsers = revokerIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: revokerIds } },
+            select: { id: true, name: true },
+          })
+        : [];
+      const revokerNameById = new Map(revokerUsers.map((u) => [u.id, u.name]));
+
       for (const q of revokedQrs) {
+        const actor = q.revokedBy ? revokerNameById.get(q.revokedBy) ?? q.revokedBy : null;
         events.push({
           ts: (q.revokedAt ?? q.generatedAt).toISOString(),
           kind: 'QR_REVOKED',
           customer: q.customer,
-          actor: q.revokedBy,
+          actor,
           detail: `QR v${q.version} revoked — ${q.reason ?? 'no reason given'}`,
         });
       }

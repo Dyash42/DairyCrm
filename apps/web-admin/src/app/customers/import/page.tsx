@@ -17,9 +17,8 @@ import { StatusPill } from '@/components/ui/StatusPill';
 import {
   bulkValidate,
   bulkCommit,
-  bulkTemplateUrl,
+  downloadBulkTemplate,
   type BulkValidationResult,
-  type BulkValidatedRow,
   ApiError,
 } from '@/lib/api';
 
@@ -102,15 +101,20 @@ export default function ImportPage() {
               title="Step 1 — Download the template"
               subtitle="Fill it in Excel with your existing 400–500 customer records, then upload"
               action={
-                <a
-                  href={bulkTemplateUrl()}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await downloadBulkTemplate();
+                    } catch (e) {
+                      setError(e instanceof ApiError ? e.message : 'Download failed');
+                    }
+                  }}
                   className="btn-secondary"
-                  target="_blank"
-                  rel="noreferrer"
                 >
                   <Download size={16} />
                   Template (CSV)
-                </a>
+                </button>
               }
             />
             <CardBody>

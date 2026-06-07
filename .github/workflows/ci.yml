@@ -60,6 +60,7 @@ jobs:
           cache: 'npm'
 
       - name: npm audit (high+ severity)
-        # Surfaces high/critical vulns. Doesn't block the run yet — flip to
-        # `--audit-level high` and remove `|| true` once the queue is clean.
-        run: npm audit --audit-level=high || true
+        # Blocks the run on high/critical vulns. To unblock a known false
+        # positive, add it to .npmrc with `audit-level=high` or pin the
+        # transitive in package.json overrides — don't bypass the check.
+        run: npm audit --audit-level=high

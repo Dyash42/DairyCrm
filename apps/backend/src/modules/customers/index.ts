@@ -21,6 +21,7 @@ import { prisma } from '../../prisma';
 import { nextCustomerCode } from '../../services/customer-code';
 import { generateQrDataUrl } from '../../services/qrcode';
 import { notFound, isUniqueConstraintError } from '../../utils/http';
+import { normalizePhone } from '../../utils/phone';
 import { registerCustomerBulkRoutes } from './bulk';
 
 const ListQuery = z.object({
@@ -31,10 +32,22 @@ const ListQuery = z.object({
   cursor: z.string().optional(),
 });
 
+/** Looser than strict E.164 — accepts the various input shapes (with or
+ * without +, dashes, spaces, country code) but rejects strings that
+ * obviously can't be a phone number ("lorem ipsum is 11 chars" used to
+ * sneak through `min(10)`). */
+const phoneSchema = z
+  .string()
+  .min(10)
+  .max(20)
+  .refine((s) => /^[+\d\s\-()]{10,20}$/.test(s) && (s.match(/\d/g)?.length ?? 0) >= 10, {
+    message: 'Invalid phone number',
+  });
+
 const CreateBody = z.object({
   name: z.string().min(1),
-  phone: z.string().min(10),
-  altPhone: z.string().optional(),
+  phone: phoneSchema,
+  altPhone: phoneSchema.optional(),
   email: z.string().email().optional(),
   addressLine1: z.string().min(1),
   addressLine2: z.string().optional(),
@@ -49,8 +62,16 @@ const PatchBody = CreateBody.partial();
 export async function registerCustomerRoutes(app: App) {
   app.addHook('onRequest', app.authenticate);
 
-  // Bulk import sub-router (template/validate/commit)
-  await app.register(registerCustomerBulkRoutes, { prefix: '/bulk' });
+  // Most customer endpoints are admin-only — listing the roster, viewing
+  // details, mutating records. The one exception is GET /by-code/:code,
+  // which the mobile scanner uses; that gets opted out below.
+  const adminOnly = app.requireRole('ADMIN');
+
+  // Bulk import sub-router (template/validate/commit) — admin only.
+  await app.register(async (sub) => {
+    sub.addHook('onRequest', adminOnly);
+    await registerCustomerBulkRoutes(sub);
+  }, { prefix: '/bulk' });
 
   /**
    * GET /customers/export.csv
@@ -61,6 +82,7 @@ export async function registerCustomerRoutes(app: App) {
    * before a real DB backup is set up.
    */
   app.get('/export.csv', {
+    preHandler: adminOnly,
     handler: async (_req, reply) => {
       const customers = await prisma.customer.findMany({
         include: {
@@ -156,6 +178,7 @@ export async function registerCustomerRoutes(app: App) {
   });
 
   app.get('/', {
+    preHandler: adminOnly,
     handler: async (req) => {
       const q = req.query as z.infer<typeof ListQuery>;
       const where: Record<string, unknown> = {};
@@ -181,6 +204,7 @@ export async function registerCustomerRoutes(app: App) {
   });
 
   app.get('/:id', {
+    preHandler: adminOnly,
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
       const customer = await prisma.customer.findUnique({ where: { id } });
@@ -190,6 +214,7 @@ export async function registerCustomerRoutes(app: App) {
   });
 
   app.get('/:id/detail', {
+    preHandler: adminOnly,
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
       const customer = await prisma.customer.findUnique({
@@ -207,6 +232,7 @@ export async function registerCustomerRoutes(app: App) {
   });
 
   app.get('/:id/qr', {
+    preHandler: adminOnly,
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
       const customer = await prisma.customer.findUnique({ where: { id } });
@@ -245,6 +271,7 @@ export async function registerCustomerRoutes(app: App) {
    * lookups still work; only the rendered image is fresh (different version).
    */
   app.post('/:id/qr/regenerate', {
+    preHandler: adminOnly,
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
       const body = req.body as { reason?: string } | undefined;
@@ -294,8 +321,12 @@ export async function registerCustomerRoutes(app: App) {
   });
 
   app.post('/', {
+    preHandler: adminOnly,
     handler: async (req, reply) => {
-      const body = req.body as z.infer<typeof CreateBody>;
+      const body = CreateBody.parse(req.body);
+      // Normalize phone exactly like the bulk importer so single-create
+      // and CSV import don't drift (the audit's M1 finding).
+      body.phone = normalizePhone(body.phone);
       const code = await nextCustomerCode(prisma);
       const qrCodeUrl = await generateQrDataUrl(code);
       try {
@@ -325,18 +356,21 @@ export async function registerCustomerRoutes(app: App) {
   });
 
   app.patch('/:id', {
+    preHandler: adminOnly,
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
-      const updated = await prisma.customer.update({
-        where: { id },
-        data: req.body as z.infer<typeof PatchBody>,
-      }).catch(() => null);
+      const body = PatchBody.parse(req.body);
+      if (body.phone) body.phone = normalizePhone(body.phone);
+      const updated = await prisma.customer
+        .update({ where: { id }, data: body })
+        .catch(() => null);
       if (!updated) return reply.status(404).send({ error: 'NotFound' });
       return updated;
     },
   });
 
   app.delete('/:id', {
+    preHandler: adminOnly,
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
       const updated = await prisma.customer.update({

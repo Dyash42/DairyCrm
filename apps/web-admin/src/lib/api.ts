@@ -507,8 +507,29 @@ export function bulkCommit(rows: BulkValidatedRow[]) {
   );
 }
 
-/** Convenience link for the template — opens directly in a new tab so the
- *  browser downloads with the correct filename. Returns the URL string. */
+/**
+ * The template endpoint is auth-required — so we can't use a plain
+ * <a href>. This fetches with the Bearer token then triggers a browser
+ * download via an object URL, matching the Customers CSV export pattern.
+ */
+export async function downloadBulkTemplate(): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/customers/bulk/template`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `Template download failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'jharanai-customer-template.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** @deprecated use downloadBulkTemplate() — a plain href returns 401 since the endpoint is authed. */
 export function bulkTemplateUrl(): string {
   return `${API_BASE}/customers/bulk/template`;
 }

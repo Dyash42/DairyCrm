@@ -50,7 +50,14 @@ export class MetaMessagingProvider implements MessagingProvider {
   verifyWebhookSignature(rawBody: string, signature: string | undefined): boolean {
     const c = loadConfig();
     if (!c.META_APP_SECRET) {
-      return c.NODE_ENV !== 'production';
+      // Without a secret we have NOTHING to verify against. The previous
+      // "NODE_ENV !== production" gate quietly accepted unsigned webhooks
+      // in staging — which is internet-exposed and lets anyone inject
+      // events. Require an explicit opt-in flag so the local-dev workflow
+      // (no Meta subscription at all) still works, but every other env
+      // hard-rejects until META_APP_SECRET is set.
+      if (c.ALLOW_UNSIGNED_WEBHOOK === '1' && c.NODE_ENV !== 'production') return true;
+      return false;
     }
     if (!signature) return false;
     const expected = `sha256=${crypto

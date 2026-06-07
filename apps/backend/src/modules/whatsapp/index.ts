@@ -12,7 +12,6 @@
 import type { App } from '../../types';
 
 import { getMessagingProvider } from '../../providers/messaging';
-import { engine } from '../../whatsapp/engine';
 import { verifyWebhook } from '../../whatsapp/webhook';
 
 export async function registerWhatsAppRoutes(app: App) {
@@ -32,12 +31,15 @@ export async function registerWhatsAppRoutes(app: App) {
   });
 
   // POST — incoming messages (HMAC-verified)
+  // Capture the raw body BEFORE parsing — required so HMAC is computed
+  // over the bytes Meta signed, not the re-serialized JSON.
   app.addContentTypeParser(
     'application/json',
     { parseAs: 'string' },
-    function (_req, body, done) {
+    function (req, body, done) {
+      (req as { rawBody?: string }).rawBody = body as string;
       try {
-        const json = JSON.parse(body as string);
+        const json = (body as string).length === 0 ? {} : JSON.parse(body as string);
         done(null, json);
       } catch (err) {
         done(err as Error, undefined);
@@ -50,18 +52,17 @@ export async function registerWhatsAppRoutes(app: App) {
     url: '/webhook',
     config: { rateLimit: { max: 200, timeWindow: '1 minute' } },
     handler: async (req, reply) => {
-      const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      const rawBody = req.rawBody ?? '';
       const signature = req.headers['x-hub-signature-256'] as string | undefined;
       if (!getMessagingProvider().verifyWebhookSignature(rawBody, signature)) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
-      const event = (typeof req.body === 'string' ? JSON.parse(req.body) : req.body) as Parameters<
+      const event = req.body as Parameters<
         typeof import('../../whatsapp/webhook').handleWebhook
       >[0];
       // Fire-and-forget the engine so we respond fast (Meta retries on >5s).
       void (async () => {
         try {
-          await engine.process; // reference to keep import live
           const { handleWebhook } = await import('../../whatsapp/webhook');
           await handleWebhook(event);
         } catch (err) {
@@ -71,5 +72,4 @@ export async function registerWhatsAppRoutes(app: App) {
       return reply.status(200).send({ ok: true });
     },
   });
-
 }

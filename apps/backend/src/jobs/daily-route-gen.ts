@@ -60,17 +60,20 @@ export async function runDailyRouteGenOnce(today: Date = startOfTodayUTC()): Pro
   created: number;
   alreadyExisting: number;
 }> {
+  // We DON'T early-return on `existing > 0` — a previous partial run might
+  // have crashed mid-createMany, leaving 50 of 500 customers materialized.
+  // Skipping then would permanently strand the other 450. The unique index
+  // on (customerId, scheduledFor) + `skipDuplicates: true` makes
+  // re-running safely idempotent: rows that exist stay; rows that don't
+  // get created.
   const existing = await prisma.delivery.count({ where: { scheduledFor: today } });
-  if (existing > 0) {
-    return { date: today.toISOString().slice(0, 10), created: 0, alreadyExisting: existing };
-  }
 
   const planned = await getDeliveriesForDate(today, buildScheduleRepo());
   if (planned.length === 0) {
-    return { date: today.toISOString().slice(0, 10), created: 0, alreadyExisting: 0 };
+    return { date: today.toISOString().slice(0, 10), created: 0, alreadyExisting: existing };
   }
 
-  await prisma.delivery.createMany({
+  const result = await prisma.delivery.createMany({
     data: planned
       .filter((p) => p.routeId !== null)
       .map((p) => ({
@@ -85,8 +88,8 @@ export async function runDailyRouteGenOnce(today: Date = startOfTodayUTC()): Pro
 
   return {
     date: today.toISOString().slice(0, 10),
-    created: planned.length,
-    alreadyExisting: 0,
+    created: result.count,
+    alreadyExisting: existing,
   };
 }
 

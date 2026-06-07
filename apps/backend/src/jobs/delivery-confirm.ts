@@ -36,6 +36,15 @@ export async function runDeliveryConfirmOnce(): Promise<{
   let sent = 0;
   let failed = 0;
   for (const d of recent) {
+    // Claim-then-send. If two cron ticks overlap, only one updateMany
+    // succeeds — the other returns count:0 and skips. If the send fails
+    // afterward, we roll back the stamp so the next tick can retry.
+    const claim = await prisma.delivery.updateMany({
+      where: { id: d.id, confirmationSentAt: null },
+      data: { confirmationSentAt: new Date() },
+    });
+    if (claim.count === 0) continue;
+
     try {
       const litres = Number(d.deliveredLitres ?? d.scheduledLitres);
       await sender.send({
@@ -47,13 +56,17 @@ export async function runDeliveryConfirmOnce(): Promise<{
           address_short: d.customer.addressLine1.split(',')[0]?.trim() ?? '',
         },
       });
-      await prisma.delivery.update({
-        where: { id: d.id },
-        data: { confirmationSentAt: new Date() },
-      });
       sent += 1;
     } catch (err) {
       failed += 1;
+      // Roll back so a future tick retries. updateMany guards against
+      // overwriting a more-recent legitimate stamp.
+      await prisma.delivery
+        .updateMany({
+          where: { id: d.id, confirmationSentAt: { not: null } },
+          data: { confirmationSentAt: null },
+        })
+        .catch(() => undefined);
       await captureException(err, { deliveryId: d.id });
     }
   }

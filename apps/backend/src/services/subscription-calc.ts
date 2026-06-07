@@ -82,6 +82,8 @@ export function countDeliveriesInRange(
   startDate: Date,
   durationDays: number,
   daysOfWeek: WeekdayNumber[],
+  /** Business timezone — defaults to IST since the dairy runs in Berhampur. */
+  tz: string = 'Asia/Kolkata',
 ): number {
   const wanted = new Set<number>(daysOfWeek);
   const start = startOfDayUTC(startDate);
@@ -89,9 +91,20 @@ export function countDeliveriesInRange(
   for (let i = 0; i < durationDays; i++) {
     const d = new Date(start);
     d.setUTCDate(d.getUTCDate() + i);
-    if (wanted.has(d.getUTCDay())) count += 1;
+    // Use the IST weekday — UTC weekday would mis-classify any IST early
+    // morning (00:00-05:29) as the previous day, breaking MON_TO_SAT
+    // patterns at the boundary.
+    const wd = weekdayFromTz(d, tz);
+    if (wanted.has(wd)) count += 1;
   }
   return count;
+}
+
+function weekdayFromTz(d: Date, tz: string): number {
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' });
+  const name = fmt.format(d);
+  const idx = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(name);
+  return idx === -1 ? d.getUTCDay() : idx;
 }
 
 /**

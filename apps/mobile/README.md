@@ -18,15 +18,61 @@ Flutter app for milkmen — QR-scan delivery confirmation with offline-first syn
 
 ```bash
 cd apps/mobile
-flutter pub get
 
-# REQUIRED — generates Drift code (storage/database.g.dart)
+# 1. Bootstrap the platform folders (android/, ios/). The repo only
+#    tracks the Dart source under lib/ + pubspec.yaml + tests — the
+#    native scaffolding lives outside version control because it's
+#    generated and 99% boilerplate. Run this ONCE per fresh clone.
+flutter create --platforms=android,ios --org com.jharanai --project-name jharanai_mobile .
+
+# 2. Patch the freshly-generated AndroidManifest to add the permissions
+#    the app actually needs (see "Required Android permissions" below).
+#    Without these the QR scanner silently fails to open the camera.
+
+# 3. Install deps + generate Drift code (storage/database.g.dart).
+flutter pub get
 dart run build_runner build --delete-conflicting-outputs
 
-# Then either:
+# 4. Run.
 flutter run                                                # uses default API_BASE
 flutter run --dart-define=API_BASE=http://192.168.1.20:3000  # custom backend
 ```
+
+### Required Android permissions
+
+Add these inside the `<manifest>` block of
+`android/app/src/main/AndroidManifest.xml` (the file created by step 1
+above), ABOVE the `<application>` tag:
+
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-feature android:name="android.hardware.camera" android:required="true" />
+```
+
+And in `android/app/build.gradle`, ensure:
+
+```gradle
+defaultConfig {
+    minSdkVersion 23  // flutter_secure_storage uses EncryptedSharedPreferences from API 23+
+    targetSdkVersion 34
+}
+```
+
+Without `minSdkVersion 23` the JWT silently falls back to plaintext
+`SharedPreferences` on older devices — the secure-storage promise is broken.
+
+### Required iOS keys
+
+In `ios/Runner/Info.plist` add (between `<dict>` tags):
+
+```xml
+<key>NSCameraUsageDescription</key>
+<string>Scan customer QR codes for delivery confirmation</string>
+```
+
+The store rejects builds that use the camera without a usage string.
 
 ### API base URL
 

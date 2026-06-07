@@ -16,6 +16,8 @@ import { z } from 'zod';
 import { DeliveryStatus } from '@prisma/client';
 
 import { prisma } from '../../prisma';
+import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
+import { settings } from '../../services/settings';
 
 const ListQuery = z.object({
   period: z.string().regex(/^\d{4}-\d{2}$/).optional(),
@@ -25,10 +27,10 @@ function monthBounds(periodYM?: string): { from: Date; to: Date; label: string }
   let year: number;
   let month: number;
   if (periodYM) {
-    const [y, m] = periodYM.split('-').map(Number);
-    if (y && m) {
-      year = y;
-      month = m - 1;
+    const [yRaw, mRaw] = periodYM.split('-').map(Number);
+    if (Number.isInteger(yRaw) && Number.isInteger(mRaw) && (mRaw as number) >= 1 && (mRaw as number) <= 12) {
+      year = yRaw as number;
+      month = (mRaw as number) - 1;
     } else {
       const d = new Date();
       year = d.getUTCFullYear();
@@ -52,6 +54,17 @@ export async function registerBillingRoutes(app: App) {
     handler: async (req) => {
       const { period } = ListQuery.parse(req.query);
       const { from, to, label } = monthBounds(period);
+
+      // Settings-driven fallback rate. We still prefer the subscription's
+      // own cached rate (set at the time of subscribing — that's the rate
+      // the customer agreed to). Only when a delivery has no subscription
+      // we fall back to this. NOTE: this is the rate at THIS moment, not
+      // the rate when the delivery happened; capturing per-Delivery rate
+      // is a follow-up.
+      const fallbackRate = await settings.getNumber(
+        'pricing.default_rate_per_litre_inr',
+        DEFAULT_RATE_PER_LITRE_INR,
+      );
 
       const deliveries = await prisma.delivery.findMany({
         where: {
@@ -86,7 +99,7 @@ export async function registerBillingRoutes(app: App) {
       >();
       for (const d of deliveries) {
         const litres = Number(d.deliveredLitres ?? d.scheduledLitres);
-        const rate = Number(d.customer.subscriptions[0]?.ratePerLitre ?? 64);
+        const rate = Number(d.customer.subscriptions[0]?.ratePerLitre ?? fallbackRate);
         const e = byCustomer.get(d.customerId) ?? {
           id: d.customerId,
           customerName: d.customer.name,

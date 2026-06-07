@@ -40,11 +40,21 @@ Dio buildDio({required TokenStore tokenStore}) {
     ),
   );
 
+  // The /auth/* paths that DON'T need a token. Everything else under
+  // /auth/* (notably /auth/me, which validates an existing token on cold
+  // start) MUST send Authorization. The previous prefix-match wiped the
+  // token on every cold start because /auth/me went out unauthenticated,
+  // got 401, and the error interceptor cleared the token.
+  const unauthenticatedPaths = <String>{
+    '/auth/admin/login',
+    '/auth/executive/otp/request',
+    '/auth/executive/otp/verify',
+  };
+
   dio.interceptors.add(InterceptorsWrapper(
     onRequest: (options, handler) async {
-      // Skip auth header for unauth endpoints
-      final isAuthRequest = options.path.startsWith('/auth/');
-      if (!isAuthRequest) {
+      final needsAuth = !unauthenticatedPaths.contains(options.path);
+      if (needsAuth) {
         final token = await tokenStore.read();
         if (token != null && token.isNotEmpty) {
           options.headers['Authorization'] = 'Bearer $token';
@@ -53,8 +63,12 @@ Dio buildDio({required TokenStore tokenStore}) {
       handler.next(options);
     },
     onError: (e, handler) async {
-      // 401 — purge token so the UI lands back on login.
-      if (e.response?.statusCode == 401) {
+      // 401 — purge token so the UI lands back on login. Skipped for the
+      // OTP-request endpoint which can legitimately return 401 when the
+      // phone isn't registered (we don't want to clear an unrelated token).
+      final path = e.requestOptions.path;
+      if (e.response?.statusCode == 401 &&
+          !unauthenticatedPaths.contains(path)) {
         await tokenStore.clear();
       }
       handler.next(e);

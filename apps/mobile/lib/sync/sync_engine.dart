@@ -130,6 +130,14 @@ class SyncEngine extends StateNotifier<SyncState> {
     }
   }
 
+  /// Public on-demand drain — used by the EOD screen before submitting
+  /// the day report to make sure all locally-queued scans are reflected
+  /// in the backend's totals. Awaits completion (or no-op if offline /
+  /// already draining).
+  Future<void> drainNow() async {
+    await _drain();
+  }
+
   @override
   void dispose() {
     _connectivitySub?.cancel();

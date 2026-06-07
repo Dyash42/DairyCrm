@@ -37,46 +37,70 @@ type ExecutiveRow = { id: string; userId: string; routeId: string | null };
 const deliveries = new Map<string, DeliveryRow>();
 const executives = new Map<string, ExecutiveRow>();
 
+const payments: Array<{ id: string; customerId: string; amount: number }> = [];
+const customerBalances = new Map<string, number>();
+
 vi.mock('../../prisma', () => {
-  return {
-    prisma: {
-      delivery: {
-        async findUnique({ where }: { where: { id: string } }) {
-          return deliveries.get(where.id) ?? null;
-        },
-        async update({ where, data, include }: any) {
-          const row = deliveries.get(where.id);
-          if (!row) throw new Error('NotFound');
-          const next: DeliveryRow = { ...row, ...data };
-          deliveries.set(where.id, next);
-          if (include?.customer) {
-            return { ...next, customer: { id: next.customerId, name: 'Test', code: 'JHR-100001' } };
-          }
-          return next;
-        },
-        async count() {
-          return deliveries.size;
-        },
-        async findMany() {
-          return Array.from(deliveries.values());
-        },
-        async createMany() {
-          return { count: 0 };
-        },
+  // The mock object IS the tx in $transaction — Prisma's transactional API
+  // uses the same shape as the top-level client, so this satisfies the
+  // new confirm handler that wraps delivery update + payment create +
+  // customer balance increment in a single tx.
+  const prismaMock: any = {
+    delivery: {
+      async findUnique({ where }: { where: { id: string } }) {
+        return deliveries.get(where.id) ?? null;
       },
-      executive: {
-        async findFirst({ where }: { where: { userId: string } }) {
-          for (const e of executives.values()) {
-            if (e.userId === where.userId) return e;
-          }
-          return null;
-        },
+      async update({ where, data, include }: any) {
+        const row = deliveries.get(where.id);
+        if (!row) throw new Error('NotFound');
+        const next: DeliveryRow = { ...row, ...data };
+        deliveries.set(where.id, next);
+        if (include?.customer) {
+          return { ...next, customer: { id: next.customerId, name: 'Test', code: 'JHR-100001' } };
+        }
+        return next;
       },
-      subscription: { async findMany() { return []; } },
-      pauseRecord: { async findMany() { return []; } },
-      holidayCalendar: { async findFirst() { return null; } },
+      async count() {
+        return deliveries.size;
+      },
+      async findMany() {
+        return Array.from(deliveries.values());
+      },
+      async createMany() {
+        return { count: 0 };
+      },
+    },
+    executive: {
+      async findFirst({ where }: { where: { userId: string } }) {
+        for (const e of executives.values()) {
+          if (e.userId === where.userId) return e;
+        }
+        return null;
+      },
+    },
+    payment: {
+      async create({ data }: any) {
+        const id = `p_${payments.length + 1}`;
+        payments.push({ id, customerId: data.customerId, amount: Number(data.amount) });
+        return { id, ...data };
+      },
+    },
+    customer: {
+      async update({ where, data }: any) {
+        const current = customerBalances.get(where.id) ?? 0;
+        const inc = Number(data.balance?.increment ?? 0);
+        customerBalances.set(where.id, current + inc);
+        return { id: where.id, balance: current + inc };
+      },
+    },
+    subscription: { async findMany() { return []; } },
+    pauseRecord: { async findMany() { return []; } },
+    holidayCalendar: { async findFirst() { return null; } },
+    async $transaction(fn: any) {
+      return fn(prismaMock);
     },
   };
+  return { prisma: prismaMock };
 });
 
 import { registerDeliveryRoutes } from './index';
@@ -85,6 +109,15 @@ let app: FastifyInstance;
 
 beforeAll(async () => {
   app = Fastify();
+  // Mirror the production global error handler: ZodError → 422 with the
+  // issue list. Without this the handler's `ConfirmBody.parse(req.body)`
+  // throws straight to a 500.
+  app.setErrorHandler(async (err, _req, reply) => {
+    if (err && (err as { name?: string }).name === 'ZodError') {
+      return reply.status(422).send({ error: 'ValidationError', issues: (err as { issues?: unknown[] }).issues });
+    }
+    throw err;
+  });
   // Stub authenticate to inject a user
   app.decorate('authenticate', async (req: any) => {
     // The /confirm route inspects req.user.role and req.user.sub
@@ -128,7 +161,7 @@ describe('POST /deliveries/:id/confirm', () => {
     expect(res.statusCode).toBe(200);
     const row = deliveries.get('d1');
     expect(row?.status).toBe('DELIVERED');
-    expect(row?.deliveredLitres).toBe(2.0);
+    expect(Number(row?.deliveredLitres)).toBe(2.0);
     expect(row?.scannedAt).toBeInstanceOf(Date);
   });
 
@@ -154,7 +187,7 @@ describe('POST /deliveries/:id/confirm', () => {
     expect(res.statusCode).toBe(200);
     const row = deliveries.get('d1');
     expect(row?.status).toBe('PARTIAL');
-    expect(row?.deliveredLitres).toBe(1.0);
+    expect(Number(row?.deliveredLitres)).toBe(1.0);
   });
 
   it('attaches executiveId when the caller is an EXECUTIVE', async () => {

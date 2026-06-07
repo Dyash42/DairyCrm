@@ -21,6 +21,7 @@ import { prisma } from '../../prisma';
 import { nextCustomerCode } from '../../services/customer-code';
 import { generateQrDataUrl } from '../../services/qrcode';
 import { notFound, isUniqueConstraintError } from '../../utils/http';
+import { registerCustomerBulkRoutes } from './bulk';
 
 const ListQuery = z.object({
   status: z.nativeEnum(CustomerStatus).optional(),
@@ -47,6 +48,9 @@ const PatchBody = CreateBody.partial();
 
 export async function registerCustomerRoutes(app: App) {
   app.addHook('onRequest', app.authenticate);
+
+  // Bulk import sub-router (template/validate/commit)
+  await app.register(registerCustomerBulkRoutes, { prefix: '/bulk' });
 
   app.get('/', {
     handler: async (req) => {

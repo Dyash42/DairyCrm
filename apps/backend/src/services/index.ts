@@ -8,3 +8,4 @@ export * from './qrcode';
 export * from './subscription-calc';
 export * from './scheduling';
 export * from './settings';
+export * from './bulk-customer-import';

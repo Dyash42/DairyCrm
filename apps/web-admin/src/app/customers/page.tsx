@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Search, Download, ChevronRight } from 'lucide-react';
+import { Search, Download, ChevronRight, Plus, Upload } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
 import { SegmentedTabs } from '@/components/ui/Tabs';
@@ -13,7 +14,7 @@ import {
   getInitials,
   getRouteName,
 } from '@/lib/mock-data';
-import { fetchCustomers } from '@/lib/api';
+import { fetchCustomers, fetchRoutes, createCustomer, ApiError } from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import {
   formatINR,
@@ -40,6 +41,7 @@ export default function CustomersPage() {
   const router = useRouter();
   const [filter, setFilter] = useState<Filter>('ALL');
   const [query, setQuery] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
 
   const { data: customers } = useApiWithFallback(
     () =>
@@ -112,10 +114,20 @@ export default function CustomersPage() {
               onChange={setFilter}
             />
           </div>
-          <button className="btn-secondary">
-            <Download size={16} />
-            Export
-          </button>
+          <div className="flex gap-2">
+            <Link href="/customers/import" className="btn-secondary">
+              <Upload size={16} />
+              Import CSV
+            </Link>
+            <button onClick={() => setAddOpen(true)} className="btn-primary">
+              <Plus size={16} />
+              Add customer
+            </button>
+            <button className="btn-secondary">
+              <Download size={16} />
+              Export
+            </button>
+          </div>
         </div>
 
         {/* Table */}
@@ -195,6 +207,211 @@ export default function CustomersPage() {
           </table>
         </Card>
       </div>
+
+      {addOpen && (
+        <AddCustomerModal
+          onClose={() => setAddOpen(false)}
+          onCreated={(id) => router.push(`/customers/${id}`)}
+        />
+      )}
     </>
+  );
+}
+
+interface AddForm {
+  name: string;
+  phone: string;
+  addressLine1: string;
+  email: string;
+  altPhone: string;
+  area: string;
+  pinCode: string;
+  routeId: string;
+  litresPerDay: string;
+}
+
+function AddCustomerModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const [routes, setRoutes] = useState<Array<{ id: string; name: string }>>([]);
+  const [form, setForm] = useState<AddForm>({
+    name: '',
+    phone: '',
+    addressLine1: '',
+    email: '',
+    altPhone: '',
+    area: '',
+    pinCode: '',
+    routeId: '',
+    litresPerDay: '1',
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchRoutes()
+      .then((r) => setRoutes(r.routes.map((rr) => ({ id: rr.id, name: rr.name }))))
+      .catch(() => {});
+  }, []);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const created = await createCustomer({
+        name: form.name,
+        phone: form.phone,
+        addressLine1: form.addressLine1,
+        email: form.email || undefined,
+        altPhone: form.altPhone || undefined,
+        area: form.area || undefined,
+        pinCode: form.pinCode || undefined,
+        routeId: form.routeId || undefined,
+        litresPerDay: Number(form.litresPerDay),
+      });
+      onCreated(created.id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not create customer');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <form
+        onSubmit={submit}
+        className="bg-surface rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4"
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-text-primary">Add customer</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-text-muted hover:text-text-primary text-xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <ModalField label="Name" required>
+            <input
+              required
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              className="input w-full"
+            />
+          </ModalField>
+          <ModalField label="Phone" required>
+            <input
+              required
+              value={form.phone}
+              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              className="input w-full tabular"
+              placeholder="+91 9XXXXXXXXX"
+            />
+          </ModalField>
+          <ModalField label="Address" required>
+            <input
+              required
+              value={form.addressLine1}
+              onChange={(e) => setForm((f) => ({ ...f, addressLine1: e.target.value }))}
+              className="input w-full"
+            />
+          </ModalField>
+          <ModalField label="Route">
+            <select
+              value={form.routeId}
+              onChange={(e) => setForm((f) => ({ ...f, routeId: e.target.value }))}
+              className="input w-full"
+            >
+              <option value="">— pick a route —</option>
+              {routes.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </ModalField>
+          <ModalField label="Litres / day" required>
+            <input
+              required
+              type="number"
+              step="0.5"
+              value={form.litresPerDay}
+              onChange={(e) => setForm((f) => ({ ...f, litresPerDay: e.target.value }))}
+              className="input w-full tabular"
+            />
+          </ModalField>
+          <ModalField label="Area">
+            <input
+              value={form.area}
+              onChange={(e) => setForm((f) => ({ ...f, area: e.target.value }))}
+              className="input w-full"
+            />
+          </ModalField>
+          <ModalField label="PIN code">
+            <input
+              value={form.pinCode}
+              onChange={(e) => setForm((f) => ({ ...f, pinCode: e.target.value }))}
+              className="input w-full tabular"
+            />
+          </ModalField>
+          <ModalField label="Email (optional)">
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+              className="input w-full"
+            />
+          </ModalField>
+        </div>
+
+        {error && (
+          <div className="bg-danger-light text-danger-dark text-sm rounded-lg p-3">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="btn-primary disabled:opacity-50"
+          >
+            {submitting ? 'Creating…' : 'Create customer'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ModalField({
+  label,
+  required,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
+        {label}
+        {required && <span className="text-danger">*</span>}
+      </span>
+      <div className="mt-1.5">{children}</div>
+    </label>
   );
 }

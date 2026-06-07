@@ -1,0 +1,264 @@
+/**
+ * Bulk customer import endpoints.
+ *
+ *   GET    /customers/bulk/template   — downloadable CSV with headers + 3 example rows
+ *   POST   /customers/bulk/validate   — { csv } → parsed + DB-cross-checked preview
+ *   POST   /customers/bulk/commit     — { rows } → create customers + subs + QrCode rows
+ *
+ * The PRD workflow: admin downloads template → fills 400-500 rows in Excel
+ * → uploads → previews errors → commits. New customers (post-launch) come
+ * in via WhatsApp; this is for ONE-TIME onboarding migration.
+ */
+
+import type { App } from '../../types';
+import { z } from 'zod';
+import { CustomerStatus, QrCodeStatus, SubscriptionStatus, RenewalReminderStatus } from '@prisma/client';
+
+import { prisma } from '../../prisma';
+import {
+  buildTemplateCsv,
+  validateCsv,
+  type ValidatedRow,
+  type ValidationIssue,
+} from '../../services/bulk-customer-import';
+import { nextCustomerCode } from '../../services/customer-code';
+import { generateQrDataUrl } from '../../services/qrcode';
+import { settings } from '../../services/settings';
+import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
+
+const ValidateBody = z.object({
+  csv: z.string().min(1),
+});
+
+const CommitBody = z.object({
+  rows: z.array(z.unknown()).min(1).max(2000),
+});
+
+export async function registerCustomerBulkRoutes(app: App) {
+  // Template — also reachable without auth so admin can pre-download
+  // before logging in if needed. We keep auth on for now since this is
+  // internal-only.
+  app.addHook('onRequest', app.authenticate);
+
+  app.get('/template', {
+    handler: async (_req, reply) => {
+      const csv = buildTemplateCsv();
+      reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header('Content-Disposition', 'attachment; filename="jharanai-customers-template.csv"')
+        .send(csv);
+    },
+  });
+
+  app.post('/validate', {
+    handler: async (req) => {
+      const body = ValidateBody.parse(req.body);
+      const result = validateCsv(body.csv);
+
+      // Cross-check against the DB:
+      //  - phones already registered → flip those rows to errors
+      //  - route names that don't exist → error
+      //  - product codes that don't exist → error
+      //  - codes already in use → error
+      const issues: ValidationIssue[] = [...result.issues];
+      const validRows: ValidatedRow[] = [];
+
+      if (result.valid.length > 0) {
+        const phones = result.valid.map((r) => r.phone);
+        const existingPhones = new Set(
+          (await prisma.customer.findMany({
+            where: { phone: { in: phones } },
+            select: { phone: true },
+          })).map((c) => c.phone),
+        );
+
+        const routeNames = Array.from(new Set(result.valid.map((r) => r.routeName)));
+        const routes = await prisma.route.findMany({
+          where: { name: { in: routeNames } },
+          select: { id: true, name: true },
+        });
+        const routeByName = new Map(routes.map((r) => [r.name, r.id]));
+
+        const productCodes = Array.from(new Set(result.valid.map((r) => r.productCode)));
+        const products = await prisma.product.findMany({
+          where: { code: { in: productCodes } },
+          select: { id: true, code: true, ratePerUnit: true },
+        });
+        const productByCode = new Map(products.map((p) => [p.code, p]));
+
+        const claimedCodes = result.codes;
+        const existingCodes = new Set(
+          claimedCodes.length > 0
+            ? (await prisma.customer.findMany({
+                where: { code: { in: claimedCodes } },
+                select: { code: true },
+              })).map((c) => c.code)
+            : [],
+        );
+
+        for (const row of result.valid) {
+          const rowIssues: ValidationIssue[] = [];
+          if (existingPhones.has(row.phone)) {
+            rowIssues.push({
+              row: row.row,
+              column: 'phone',
+              severity: 'error',
+              message: `Phone ${row.phone} already exists in the system`,
+            });
+          }
+          if (!routeByName.has(row.routeName)) {
+            rowIssues.push({
+              row: row.row,
+              column: 'route_name',
+              severity: 'error',
+              message: `Route "${row.routeName}" doesn't exist. Create it first.`,
+            });
+          }
+          if (!productByCode.has(row.productCode)) {
+            rowIssues.push({
+              row: row.row,
+              column: 'product_code',
+              severity: 'error',
+              message: `Unknown product "${row.productCode}". Add it on the Products page first.`,
+            });
+          }
+          if (row.customerCode && existingCodes.has(row.customerCode)) {
+            rowIssues.push({
+              row: row.row,
+              column: 'customer_code',
+              severity: 'error',
+              message: `customer_code ${row.customerCode} is already in use`,
+            });
+          }
+          if (rowIssues.length === 0) {
+            validRows.push(row);
+          } else {
+            issues.push(...rowIssues);
+          }
+        }
+      }
+
+      return {
+        valid: validRows,
+        issues,
+        summary: {
+          rowsSubmitted: result.valid.length + result.issues.filter((i) => i.severity === 'error').length,
+          rowsValid: validRows.length,
+          errorCount: issues.filter((i) => i.severity === 'error').length,
+          warningCount: issues.filter((i) => i.severity === 'warning').length,
+        },
+      };
+    },
+  });
+
+  app.post('/commit', {
+    handler: async (req, reply) => {
+      const body = CommitBody.parse(req.body);
+      const rows = body.rows as ValidatedRow[];
+
+      // Re-fetch route + product maps so we don't trust stale client data
+      const routeNames = Array.from(new Set(rows.map((r) => r.routeName)));
+      const productCodes = Array.from(new Set(rows.map((r) => r.productCode)));
+      const routes = await prisma.route.findMany({
+        where: { name: { in: routeNames } },
+      });
+      const routeByName = new Map(routes.map((r) => [r.name, r]));
+      const products = await prisma.product.findMany({
+        where: { code: { in: productCodes } },
+      });
+      const productByCode = new Map(products.map((p) => [p.code, p]));
+
+      const renewalLeadDays = await settings.getNumber(
+        'subscription.renewal_reminder_days_before',
+        3,
+      );
+
+      const createdIds: string[] = [];
+      const failures: Array<{ row: number; error: string }> = [];
+
+      for (const row of rows) {
+        try {
+          const route = routeByName.get(row.routeName);
+          const product = productByCode.get(row.productCode);
+          if (!route || !product) {
+            failures.push({ row: row.row, error: 'Route or product missing' });
+            continue;
+          }
+          const rate = Number(product.ratePerUnit) || DEFAULT_RATE_PER_LITRE_INR;
+
+          // Reserve code: prefer requested customer_code if provided, else
+          // allocate from counter.
+          const code = row.customerCode ?? (await nextCustomerCode(prisma));
+          const qrCodeUrl = await generateQrDataUrl(code);
+
+          const startDate = new Date(`${row.startDate}T00:00:00.000Z`);
+          const endDate = new Date(startDate);
+          endDate.setUTCDate(endDate.getUTCDate() + row.durationDays);
+          const dueDate = new Date(endDate);
+          dueDate.setUTCDate(dueDate.getUTCDate() - renewalLeadDays);
+
+          const result = await prisma.$transaction(async (tx) => {
+            const customer = await tx.customer.create({
+              data: {
+                code,
+                name: row.name,
+                phone: row.phone,
+                altPhone: row.altPhone ?? null,
+                email: row.email ?? null,
+                addressLine1: row.addressLine1,
+                area: row.area ?? null,
+                pinCode: row.pinCode ?? null,
+                routeId: route.id,
+                litresPerDay: row.litresPerDay,
+                status: CustomerStatus.ACTIVE,
+                qrCodeUrl,
+              },
+            });
+            await tx.qrCode.create({
+              data: {
+                customerId: customer.id,
+                payload: code,
+                url: qrCodeUrl,
+                status: QrCodeStatus.ACTIVE,
+                version: 1,
+              },
+            });
+            const sub = await tx.subscription.create({
+              data: {
+                customerId: customer.id,
+                productId: product.id,
+                sku: product.code,
+                litresPerDay: row.litresPerDay,
+                daysOfWeek: row.daysOfWeek,
+                ratePerLitre: rate,
+                startDate,
+                endDate,
+                status: SubscriptionStatus.ACTIVE,
+              },
+            });
+            await tx.renewalReminder.create({
+              data: {
+                subscriptionId: sub.id,
+                customerId: customer.id,
+                dueDate,
+                status: RenewalReminderStatus.PENDING,
+              },
+            });
+            return customer.id;
+          });
+          createdIds.push(result);
+        } catch (err) {
+          failures.push({
+            row: row.row,
+            error: err instanceof Error ? err.message.slice(0, 200) : String(err),
+          });
+        }
+      }
+
+      return reply.status(200).send({
+        imported: createdIds.length,
+        failures,
+      });
+    },
+  });
+}

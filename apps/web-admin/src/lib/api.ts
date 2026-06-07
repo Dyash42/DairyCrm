@@ -124,6 +124,25 @@ export function fetchRoutes() {
   return apiFetch<{ routes: RoutePayload[] }>('/routes');
 }
 
+export function fetchRouteDetail(id: string) {
+  return apiFetch<{
+    id: string;
+    name: string;
+    area: string;
+    pinCodes: string[];
+    executive: { id: string; user: { name: string; phone: string } } | null;
+    customers: Array<{
+      id: string;
+      code: string;
+      name: string;
+      addressLine1: string;
+      routeSeq: number | null;
+      status: 'ACTIVE' | 'PAUSED' | 'CANCELLED';
+      litresPerDay: string | number;
+    }>;
+  }>(`/routes/${id}`);
+}
+
 export function fetchCustomers(params: {
   q?: string;
   status?: string;
@@ -299,6 +318,80 @@ export function updateProduct(id: string, input: Partial<Parameters<typeof creat
 
 export function deleteProduct(id: string) {
   return apiFetch<{ ok: true }>(`/products/${id}`, { method: 'DELETE' });
+}
+
+// ----------------------- Bulk import -----------------------
+export interface BulkValidatedRow {
+  row: number;
+  name: string;
+  phone: string;
+  addressLine1: string;
+  area?: string;
+  pinCode?: string;
+  routeName: string;
+  productCode: string;
+  litresPerDay: number;
+  daysOfWeek: number[];
+  durationDays: number;
+  startDate: string;
+  customerCode?: string;
+}
+
+export interface BulkValidationIssue {
+  row: number;
+  column?: string;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+export interface BulkValidationResult {
+  valid: BulkValidatedRow[];
+  issues: BulkValidationIssue[];
+  summary: {
+    rowsSubmitted: number;
+    rowsValid: number;
+    errorCount: number;
+    warningCount: number;
+  };
+}
+
+/** Server-side validate of pasted CSV. */
+export function bulkValidate(csv: string) {
+  return apiFetch<BulkValidationResult>('/customers/bulk/validate', {
+    method: 'POST',
+    body: { csv },
+  });
+}
+
+export function bulkCommit(rows: BulkValidatedRow[]) {
+  return apiFetch<{ imported: number; failures: Array<{ row: number; error: string }> }>(
+    '/customers/bulk/commit',
+    { method: 'POST', body: { rows } },
+  );
+}
+
+/** Convenience link for the template — opens directly in a new tab so the
+ *  browser downloads with the correct filename. Returns the URL string. */
+export function bulkTemplateUrl(): string {
+  return `${API_BASE}/customers/bulk/template`;
+}
+
+/** Create a single customer (used by the Add Customer modal). */
+export function createCustomer(input: {
+  name: string;
+  phone: string;
+  addressLine1: string;
+  email?: string;
+  altPhone?: string;
+  area?: string;
+  pinCode?: string;
+  routeId?: string;
+  litresPerDay: number;
+}) {
+  return apiFetch<{ id: string; code: string; qrCodeUrl: string }>(
+    '/customers',
+    { method: 'POST', body: input },
+  );
 }
 
 // ----------------------- Shared payload shapes -----------------------

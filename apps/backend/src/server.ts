@@ -33,6 +33,7 @@ import { registerHealthRoutes } from './modules/health';
 import { registerBillingRoutes } from './modules/billing';
 import { registerSettingsRoutes } from './modules/settings';
 import { registerProductRoutes } from './modules/products';
+import { registerPaymentRoutes } from './modules/payments';
 
 export interface BuildOptions {
   /** Skip rate limit in tests (it pollutes 200 fast-fire requests). */
@@ -102,6 +103,7 @@ export async function buildServer(opts: BuildOptions = {}): Promise<App> {
   await app.register(registerBillingRoutes, { prefix: '/billing' });
   await app.register(registerSettingsRoutes, { prefix: '/settings' });
   await app.register(registerProductRoutes, { prefix: '/products' });
+  await app.register(registerPaymentRoutes, { prefix: '/payments' });
 
   return app;
 }

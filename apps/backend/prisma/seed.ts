@@ -7,8 +7,18 @@
  */
 
 import { PrismaClient, UserRole, CustomerStatus, ProductCategory, SettingType } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
+
+/**
+ * Demo password for the seeded admin user.
+ * Login at /login as anil@jharanai.local / demo1234.
+ *
+ * Override with SEED_ADMIN_PASSWORD env var in production seeds — and DO
+ * NOT run this seed against a production DB without overriding.
+ */
+const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? 'demo1234';
 
 type SeedRoute = {
   id: string;
@@ -72,6 +82,10 @@ async function main() {
   console.log('[seed] starting…');
 
   // --- Admin user ---
+  // Includes a bcrypt password hash so the admin login flow works out of
+  // the box: anil@jharanai.local / demo1234 (or whatever
+  // SEED_ADMIN_PASSWORD was set to).
+  const adminPasswordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, 10);
   await prisma.user.upsert({
     where: { phone: '+919999999999' },
     create: {
@@ -79,9 +93,13 @@ async function main() {
       name: 'Anil Das',
       phone: '+919999999999',
       email: 'anil@jharanai.local',
+      passwordHash: adminPasswordHash,
     },
-    update: {},
+    // Keep the password fresh on re-seed so demo logins never break if
+    // someone rotates the SEED_ADMIN_PASSWORD env var.
+    update: { passwordHash: adminPasswordHash },
   });
+  console.log(`[seed] admin login: anil@jharanai.local / ${SEED_ADMIN_PASSWORD}`);
 
   // --- Routes ---
   for (const r of ROUTES) {

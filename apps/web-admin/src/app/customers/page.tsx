@@ -13,6 +13,7 @@ import {
   getRouteName,
 } from '@/lib/mock-data';
 import { fetchCustomers } from '@/lib/api';
+import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import {
   formatINR,
   formatLitres,
@@ -37,44 +38,31 @@ const LABEL: Record<CustomerStatus, string> = {
 export default function CustomersPage() {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [query, setQuery] = useState('');
-  const [customers, setCustomers] = useState<Customer[]>(mockCustomers);
-  const [, setSource] = useState<'live' | 'mock' | 'loading'>('loading');
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchCustomers({
-      q: query || undefined,
-      status: filter === 'ALL' ? undefined : filter,
-      limit: 100,
-    })
-      .then((data) => {
-        if (cancelled) return;
-        setCustomers(
-          data.customers.map((c) => ({
-            id: c.id,
-            code: c.code,
-            name: c.name,
-            phone: c.phone,
-            addressLine1: c.addressLine1,
-            routeId: c.routeId ?? undefined,
-            status: c.status,
-            litresPerDay: Number(c.litresPerDay),
-            balance: Number(c.balance),
-            createdAt: '',
-            updatedAt: '',
-          })),
-        );
-        setSource('live');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setCustomers(mockCustomers);
-        setSource('mock');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [query, filter]);
+  const { data: customers } = useApiWithFallback(
+    () =>
+      fetchCustomers({
+        q: query || undefined,
+        status: filter === 'ALL' ? undefined : filter,
+        limit: 100,
+      }),
+    (raw): Customer[] =>
+      raw.customers.map((c) => ({
+        id: c.id,
+        code: c.code,
+        name: c.name,
+        phone: c.phone,
+        addressLine1: c.addressLine1,
+        routeId: c.routeId ?? undefined,
+        status: c.status,
+        litresPerDay: Number(c.litresPerDay),
+        balance: Number(c.balance),
+        createdAt: '',
+        updatedAt: '',
+      })),
+    mockCustomers,
+    [query, filter],
+  );
 
   const rows = useMemo(() => {
     // The server already filters; this re-filter handles the mock-data path

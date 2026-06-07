@@ -17,6 +17,12 @@
 
 import QRCode from 'qrcode';
 
+import {
+  QR_DEFAULT_ERROR_CORRECTION,
+  QR_DEFAULT_MARGIN,
+  QR_DEFAULT_SIZE_PX,
+} from '../constants';
+
 export interface QrOptions {
   /** Output square pixel size. Defaults to 512 — readable from a meter away. */
   size?: number;
@@ -31,9 +37,9 @@ export interface QrOptions {
 }
 
 const DEFAULTS: Required<QrOptions> = {
-  size: 512,
-  errorCorrectionLevel: 'M',
-  margin: 2,
+  size: QR_DEFAULT_SIZE_PX,
+  errorCorrectionLevel: QR_DEFAULT_ERROR_CORRECTION,
+  margin: QR_DEFAULT_MARGIN,
 };
 
 /**

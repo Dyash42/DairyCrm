@@ -36,16 +36,33 @@ const Schema = z.object({
   META_APP_SECRET: z.string().optional(),
   META_GRAPH_VERSION: z.string().default('v20.0'),
 
-  // --- Razorpay ---
+  // --- Payments ---
+  /** Explicit pick; otherwise auto-detected by which keys are set. */
+  PAYMENT_PROVIDER: z.enum(['razorpay', 'cashfree', 'stub']).optional(),
+  // Razorpay
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+  // Cashfree
+  CASHFREE_APP_ID: z.string().optional(),
+  CASHFREE_SECRET_KEY: z.string().optional(),
+  CASHFREE_WEBHOOK_SECRET: z.string().optional(),
+  CASHFREE_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
+
+  // --- Messaging (WhatsApp / future BSPs) ---
+  MESSAGING_PROVIDER: z.enum(['meta', 'stub']).optional(),
 
   // --- SMS (for executive OTP) ---
-  SMS_PROVIDER: z.enum(['msg91', 'twilio', 'console']).default('console'),
-  SMS_API_KEY: z.string().optional(),
+  SMS_PROVIDER: z.enum(['console', 'msg91', 'twilio']).default('console'),
+  MSG91_AUTH_KEY: z.string().optional(),
+  MSG91_TEMPLATE_ID: z.string().optional(),
+  MSG91_SENDER_ID: z.string().optional(),
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_FROM: z.string().optional(),
 
   // --- Storage ---
+  STORAGE_PROVIDER: z.enum(['local', 's3', 'r2']).default('local'),
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().default('auto'),
   S3_ACCESS_KEY: z.string().optional(),

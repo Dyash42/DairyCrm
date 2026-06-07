@@ -15,7 +15,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import { prisma } from '../../prisma';
-import { loadConfig } from '../../config';
+import { OTP_EXPIRY_MS, OTP_LENGTH, RATE_LIMITS } from '../../constants';
+import { getSmsProvider } from '../../providers/sms';
+import { normalizePhone } from '../../utils/phone';
 import type { App } from '../../types';
 
 // ----------------------- Token payload + decorators -----------------------
@@ -77,20 +79,18 @@ export async function registerAuthDecorators(app: App) {
 const otpStore = new Map<string, { code: string; expiresAt: number }>();
 
 function genOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  const min = 10 ** (OTP_LENGTH - 1);
+  const max = 10 ** OTP_LENGTH;
+  return String(Math.floor(min + Math.random() * (max - min)));
 }
 
 async function sendOtp(phone: string, code: string): Promise<void> {
-  const config = loadConfig();
-  if (config.SMS_PROVIDER === 'console' || !config.SMS_API_KEY) {
+  await getSmsProvider().sendOtp(phone, code).catch((err) => {
     // eslint-disable-next-line no-console
-    console.log(`[auth] OTP for ${phone}: ${code}  (dev — set SMS_* to send real SMS)`);
-    return;
-  }
-  // Real SMS provider integration plugs in here. Left as TODO so missing
-  // creds don't break dev — the OTP is always logged so testers can see it.
-  // eslint-disable-next-line no-console
-  console.warn(`[auth] OTP send via ${config.SMS_PROVIDER} not yet implemented; printing instead: ${code}`);
+    console.warn('[auth] OTP send failed; falling back to log', err);
+    // eslint-disable-next-line no-console
+    console.log(`[auth] OTP for ${phone}: ${code}`);
+  });
 }
 
 // ----------------------- Routes -----------------------
@@ -100,7 +100,7 @@ export async function registerAuthRoutes(app: App) {
   app.route({
     method: 'POST',
     url: '/admin/login',
-    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: RATE_LIMITS.auth.max, timeWindow: RATE_LIMITS.auth.timeWindowMs } },
     handler: async (req, reply) => {
       const { email, password } = req.body as { email: string; password: string };
       const user = await prisma.user.findUnique({ where: { email } });
@@ -124,7 +124,7 @@ export async function registerAuthRoutes(app: App) {
   app.route({
     method: 'POST',
     url: '/executive/otp/request',
-    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: RATE_LIMITS.auth.max, timeWindow: RATE_LIMITS.auth.timeWindowMs } },
     handler: async (req, reply) => {
       const { phone } = req.body as { phone: string };
       const normalized = normalizePhone(phone);
@@ -138,7 +138,7 @@ export async function registerAuthRoutes(app: App) {
       const code = genOtp();
       otpStore.set(normalized, {
         code,
-        expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
+        expiresAt: Date.now() + OTP_EXPIRY_MS,
       });
       await sendOtp(normalized, code);
       return { ok: true };
@@ -149,7 +149,7 @@ export async function registerAuthRoutes(app: App) {
   app.route({
     method: 'POST',
     url: '/executive/otp/verify',
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: RATE_LIMITS.authVerify.max, timeWindow: RATE_LIMITS.authVerify.timeWindowMs } },
     handler: async (req, reply) => {
       const { phone, code } = req.body as { phone: string; code: string };
       const normalized = normalizePhone(phone);
@@ -182,14 +182,6 @@ export async function registerAuthRoutes(app: App) {
       return { user: req.user };
     },
   });
-}
-
-function normalizePhone(phone: string): string {
-  const digits = phone.replace(/\D/g, '');
-  // Default to India if no country code visible
-  if (digits.length === 10) return `+91${digits}`;
-  if (digits.startsWith('91') && digits.length === 12) return `+${digits}`;
-  return phone.startsWith('+') ? phone : `+${digits}`;
 }
 
 // Exposed for tests

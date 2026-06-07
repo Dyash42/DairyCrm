@@ -28,13 +28,13 @@ function makeList(from: string, rowId: string, title = rowId): InboundMessage {
 class CapturingSender extends WhatsAppSender {
   public outbox: OutboundAction[] = [];
 
-  constructor() {
-    super({ info: () => {}, warn: () => {} }, null);
-  }
-
   override async send(action: OutboundAction) {
     this.outbox.push(action);
     return { messageId: `captured-${this.outbox.length}` };
+  }
+
+  override async sendBatch(actions: OutboundAction[]) {
+    for (const a of actions) await this.send(a);
   }
 }
 

@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { Upload, Plus, ChevronRight } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
@@ -8,39 +7,24 @@ import { ExecutiveSelect } from '@/components/routes/ExecutiveSelect';
 import { CompletionMini } from '@/components/routes/CompletionMini';
 import { routes as mockRoutes, executives } from '@/lib/mock-data';
 import { fetchRoutes } from '@/lib/api';
+import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import type { Route as DomainRoute } from '@jharanai/shared';
 
 export default function RoutesPage() {
-  const [routes, setRoutes] = useState<DomainRoute[]>(mockRoutes);
-  const [source, setSource] = useState<'live' | 'mock' | 'loading'>('loading');
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchRoutes()
-      .then((data) => {
-        if (cancelled) return;
-        setRoutes(
-          data.routes.map((r) => ({
-            id: r.id,
-            name: r.name,
-            area: r.area,
-            pinCodes: r.pinCodes,
-            executiveId: r.executive?.id,
-            customerCount: r.customerCount,
-            todayCompletion: undefined,
-          })),
-        );
-        setSource('live');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setRoutes(mockRoutes);
-        setSource('mock');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { data: routes } = useApiWithFallback(
+    fetchRoutes,
+    (raw): DomainRoute[] =>
+      raw.routes.map((r) => ({
+        id: r.id,
+        name: r.name,
+        area: r.area,
+        pinCodes: r.pinCodes,
+        executiveId: r.executive?.id,
+        customerCount: r.customerCount,
+        todayCompletion: undefined,
+      })),
+    mockRoutes,
+  );
 
   const totalCustomers = routes.reduce((sum, r) => sum + r.customerCount, 0);
 

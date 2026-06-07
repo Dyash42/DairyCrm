@@ -1,0 +1,98 @@
+/**
+ * Cashfree implementation of PaymentProvider.
+ *
+ * API docs: https://docs.cashfree.com/reference/pg-payment-links
+ * Auth: x-client-id + x-client-secret headers.
+ * Webhook signing: HMAC-SHA256 of `timestamp + rawBody` using webhook secret;
+ *                  signature header is `x-webhook-signature`.
+ *
+ * NOTE: This is the integration *shape* — endpoints, headers, payload, sig
+ * algorithm are correct per Cashfree's public docs. Once you supply real
+ * sandbox creds via env, run the same tests we run for Razorpay against it.
+ */
+
+import crypto from 'node:crypto';
+
+import { loadConfig } from '../../config';
+import type { PaymentLink, PaymentLinkInput, PaymentProvider } from './types';
+
+const CASHFREE_API_VERSION = '2023-08-01';
+
+interface CashfreeLinkResponse {
+  link_id?: string;
+  link_url?: string;
+  link_amount?: number;
+}
+
+export class CashfreePaymentProvider implements PaymentProvider {
+  readonly name = 'cashfree' as const;
+
+  get isConfigured(): boolean {
+    const c = loadConfig();
+    return Boolean(c.CASHFREE_APP_ID && c.CASHFREE_SECRET_KEY);
+  }
+
+  private apiBase(): string {
+    return loadConfig().CASHFREE_ENV === 'production'
+      ? 'https://api.cashfree.com/pg'
+      : 'https://sandbox.cashfree.com/pg';
+  }
+
+  async createPaymentLink(input: PaymentLinkInput): Promise<PaymentLink> {
+    const c = loadConfig();
+    if (!c.CASHFREE_APP_ID || !c.CASHFREE_SECRET_KEY) {
+      throw new Error('Cashfree not configured');
+    }
+
+    const res = await fetch(`${this.apiBase()}/links`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-version': CASHFREE_API_VERSION,
+        'x-client-id': c.CASHFREE_APP_ID,
+        'x-client-secret': c.CASHFREE_SECRET_KEY,
+      },
+      body: JSON.stringify({
+        link_id: input.referenceId ?? `link_${Date.now()}_${input.customerId}`,
+        link_amount: input.amount,
+        link_currency: 'INR',
+        link_purpose: input.note,
+        customer_details: input.customer
+          ? {
+              customer_name: input.customer.name,
+              customer_phone: input.customer.phone,
+              customer_email: input.customer.email,
+            }
+          : undefined,
+        link_notify: { send_sms: false, send_email: false },
+        link_auto_reminders: false,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Cashfree ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const data = (await res.json()) as CashfreeLinkResponse;
+    return {
+      id: data.link_id ?? '',
+      url: data.link_url ?? '',
+      amount: input.amount,
+      provider: this.name,
+    };
+  }
+
+  verifyWebhookSignature(rawBody: string, signature: string): boolean {
+    const c = loadConfig();
+    if (!c.CASHFREE_WEBHOOK_SECRET) return false;
+    // Cashfree concatenates timestamp + body before HMAC; in production we
+    // also pass the timestamp from the header. For now we accept just the
+    // body version — the verifier in the webhook route will supply the
+    // wrapped string with timestamp.
+    const expected = crypto
+      .createHmac('sha256', c.CASHFREE_WEBHOOK_SECRET)
+      .update(rawBody, 'utf8')
+      .digest('base64');
+    return expected === signature;
+  }
+}

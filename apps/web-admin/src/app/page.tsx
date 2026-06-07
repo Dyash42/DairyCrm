@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Droplet, Users, IndianRupee, CheckCircle2 } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
@@ -13,7 +13,8 @@ import { RouteVolumeBars } from '@/components/dashboard/RouteVolumeBars';
 import { SubscriptionsDonut } from '@/components/dashboard/SubscriptionsDonut';
 import { RouteCompletionBars } from '@/components/dashboard/RouteCompletionBars';
 import { dashboardMetrics } from '@/lib/mock-data';
-import { fetchDashboardMetrics, type DashboardMetricsPayload } from '@/lib/api';
+import { fetchDashboardMetrics } from '@/lib/api';
+import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { formatINR } from '@jharanai/shared';
 
 type Range = 'TODAY' | 'WEEK' | 'MONTH';
@@ -22,28 +23,12 @@ const TODAY_LABEL = 'Mon, 2 Jun 2026';
 
 export default function DashboardPage() {
   const [range, setRange] = useState<Range>('TODAY');
-  const [m, setM] = useState<DashboardMetricsPayload>(dashboardMetrics);
-  const [source, setSource] = useState<'live' | 'mock' | 'loading'>('loading');
-
-  useEffect(() => {
-    let cancelled = false;
-    setSource('loading');
-    fetchDashboardMetrics(range)
-      .then((data) => {
-        if (cancelled) return;
-        setM(data);
-        setSource('live');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // Fallback: keep the mock so the demo never goes blank
-        setM(dashboardMetrics);
-        setSource('mock');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [range]);
+  const { data: m, source } = useApiWithFallback(
+    () => fetchDashboardMetrics(range),
+    (raw) => raw,
+    dashboardMetrics,
+    [range],
+  );
 
   // Route completion sorted best→worst, only those with data
   const routeCompletion = [...m.byRoute]

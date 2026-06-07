@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { registerWhatsAppRoutes } from './index';
 import { _resetConfigForTests } from '../../config';
+import { _resetMessagingProviderForTests } from '../../providers/messaging';
 
 const APP_SECRET = 'test-app-secret-1234';
 const VERIFY_TOKEN = 'test-verify-token';
@@ -17,8 +18,12 @@ let app: FastifyInstance;
 beforeAll(async () => {
   process.env.META_APP_SECRET = APP_SECRET;
   process.env.META_VERIFY_TOKEN = VERIFY_TOKEN;
+  // Force Meta provider so signature verification is strict.
+  process.env.META_PHONE_NUMBER_ID = 'test-pid';
+  process.env.META_ACCESS_TOKEN = 'test-token';
   process.env.NODE_ENV = 'test';
   _resetConfigForTests();
+  _resetMessagingProviderForTests();
   app = Fastify();
   await app.register(registerWhatsAppRoutes, { prefix: '/whatsapp' });
   await app.ready();
@@ -28,6 +33,9 @@ afterAll(async () => {
   await app.close();
   delete process.env.META_APP_SECRET;
   delete process.env.META_VERIFY_TOKEN;
+  delete process.env.META_PHONE_NUMBER_ID;
+  delete process.env.META_ACCESS_TOKEN;
+  _resetMessagingProviderForTests();
 });
 
 describe('GET /whatsapp/webhook (Meta verification)', () => {

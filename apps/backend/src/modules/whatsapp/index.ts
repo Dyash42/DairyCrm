@@ -9,44 +9,11 @@
  * header. Mismatches → 401 with no body, no logs that leak the payload.
  */
 
-import crypto from 'node:crypto';
 import type { App } from '../../types';
-import { z } from 'zod';
 
-import { loadConfig } from '../../config';
+import { getMessagingProvider } from '../../providers/messaging';
 import { engine } from '../../whatsapp/engine';
 import { verifyWebhook } from '../../whatsapp/webhook';
-
-/** Fastify needs the raw body to verify the HMAC. */
-async function rawBodyHook(req: { rawBody?: string; body?: unknown }) {
-  if (typeof req.body === 'string') {
-    req.rawBody = req.body;
-  }
-}
-
-/**
- * Constant-time HMAC verify.
- * Meta sends sha256=<hex>; we compute HMAC-SHA256 of the raw body using
- * META_APP_SECRET and compare.
- */
-function verifySignature(rawBody: string, signatureHeader: string | undefined): boolean {
-  const config = loadConfig();
-  if (!config.META_APP_SECRET) {
-    // No secret configured → can't verify. Fail closed in production.
-    return config.NODE_ENV !== 'production';
-  }
-  if (!signatureHeader) return false;
-  const expected = `sha256=${crypto
-    .createHmac('sha256', config.META_APP_SECRET)
-    .update(rawBody, 'utf8')
-    .digest('hex')}`;
-  // Equal-length check before timingSafeEqual to avoid throwing
-  if (expected.length !== signatureHeader.length) return false;
-  return crypto.timingSafeEqual(
-    Buffer.from(expected),
-    Buffer.from(signatureHeader),
-  );
-}
 
 export async function registerWhatsAppRoutes(app: App) {
   // GET — Meta verification challenge
@@ -85,7 +52,7 @@ export async function registerWhatsAppRoutes(app: App) {
     handler: async (req, reply) => {
       const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
       const signature = req.headers['x-hub-signature-256'] as string | undefined;
-      if (!verifySignature(rawBody, signature)) {
+      if (!getMessagingProvider().verifyWebhookSignature(rawBody, signature)) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
       const event = (typeof req.body === 'string' ? JSON.parse(req.body) : req.body) as Parameters<
@@ -105,7 +72,4 @@ export async function registerWhatsAppRoutes(app: App) {
     },
   });
 
-  // Suppress unused warning for rawBodyHook reference (placeholder for future
-  // signature-via-rawBody refactor)
-  void rawBodyHook;
 }

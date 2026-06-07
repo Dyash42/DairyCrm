@@ -13,7 +13,9 @@
 
 import type { PrismaClient } from '@prisma/client';
 
-export type CustomerCodePrefix = 'JHR';
+import { CUSTOMER_CODE_INITIAL, CUSTOMER_CODE_PREFIX } from '../constants';
+
+export type CustomerCodePrefix = typeof CUSTOMER_CODE_PREFIX;
 
 const COUNTER_KEY = 'customer';
 
@@ -22,7 +24,7 @@ const COUNTER_KEY = 'customer';
  * Pads to 6 digits like `JHR-100455`. We don't truncate at 6 — if we ever
  * cross 999_999 customers, the code just gets longer, which is fine.
  */
-export function formatCustomerCode(value: number, prefix: CustomerCodePrefix = 'JHR'): string {
+export function formatCustomerCode(value: number, prefix: CustomerCodePrefix = CUSTOMER_CODE_PREFIX): string {
   if (!Number.isInteger(value) || value < 1) {
     throw new RangeError(`customer code value must be a positive integer, got ${value}`);
   }
@@ -55,7 +57,7 @@ export function parseCustomerCode(s: string): { prefix: string; value: number } 
  */
 export async function nextCustomerCode(
   prisma: PrismaClient,
-  prefix: CustomerCodePrefix = 'JHR',
+  prefix: CustomerCodePrefix = CUSTOMER_CODE_PREFIX,
 ): Promise<string> {
   const row = await prisma.$transaction(async (tx) => {
     const existing = await tx.customerCodeCounter.findUnique({ where: { key: COUNTER_KEY } });
@@ -65,10 +67,8 @@ export async function nextCustomerCode(
         data: { lastValue: { increment: 1 } },
       });
     }
-    // First-ever call on this DB — start from 100454 so the first code is 100455
-    // (matches the dev pattern in the PDFs).
     return tx.customerCodeCounter.create({
-      data: { key: COUNTER_KEY, lastValue: 100455 },
+      data: { key: COUNTER_KEY, lastValue: CUSTOMER_CODE_INITIAL + 1 },
     });
   });
   return formatCustomerCode(row.lastValue, prefix);

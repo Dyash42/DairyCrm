@@ -52,6 +52,109 @@ export async function registerCustomerRoutes(app: App) {
   // Bulk import sub-router (template/validate/commit)
   await app.register(registerCustomerBulkRoutes, { prefix: '/bulk' });
 
+  /**
+   * GET /customers/export.csv
+   *
+   * Streams all customers as a CSV using the same column shape as the
+   * bulk-import template — so admins can export, edit in Excel, and
+   * re-import without column drift. This is the "monthly backup" lever
+   * before a real DB backup is set up.
+   */
+  app.get('/export.csv', {
+    handler: async (_req, reply) => {
+      const customers = await prisma.customer.findMany({
+        include: {
+          route: { select: { name: true } },
+          subscriptions: {
+            where: { status: 'ACTIVE' },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              sku: true,
+              daysOfWeek: true,
+              startDate: true,
+              endDate: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const csvEscape = (s: string | null | undefined): string => {
+        if (s === null || s === undefined) return '';
+        const str = String(s);
+        if (str === '') return '';
+        if (/[,"\r\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+        return str;
+      };
+
+      const header = [
+        'name',
+        'phone',
+        'alt_phone',
+        'email',
+        'address_line1',
+        'area',
+        'pin_code',
+        'route_name',
+        'product_code',
+        'litres_per_day',
+        'days_of_week',
+        'duration_days',
+        'start_date',
+        'customer_code',
+        // Read-only columns useful in a backup but ignored by the importer
+        'status',
+        'balance',
+      ];
+
+      const lines = [header.join(',')];
+      for (const c of customers) {
+        const sub = c.subscriptions[0];
+        const durationDays =
+          sub && sub.endDate
+            ? Math.max(
+                1,
+                Math.round(
+                  (sub.endDate.getTime() - sub.startDate.getTime()) / 86_400_000,
+                ),
+              )
+            : '';
+        const dow = sub?.daysOfWeek ? (sub.daysOfWeek as number[]).join(',') : 'EVERY_DAY';
+
+        lines.push(
+          [
+            csvEscape(c.name),
+            csvEscape(c.phone),
+            csvEscape(c.altPhone),
+            csvEscape(c.email),
+            csvEscape(c.addressLine1),
+            csvEscape(c.area),
+            csvEscape(c.pinCode),
+            csvEscape(c.route?.name),
+            csvEscape(sub?.sku ?? 'COW_MILK'),
+            csvEscape(String(c.litresPerDay)),
+            csvEscape(dow),
+            csvEscape(String(durationDays)),
+            csvEscape(sub ? sub.startDate.toISOString().slice(0, 10) : ''),
+            csvEscape(c.code),
+            csvEscape(c.status),
+            csvEscape(String(c.balance)),
+          ].join(','),
+        );
+      }
+
+      const today = new Date().toISOString().slice(0, 10);
+      reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header(
+          'Content-Disposition',
+          `attachment; filename="jharanai-customers-${today}.csv"`,
+        )
+        .send(`${lines.join('\n')}\n`);
+    },
+  });
+
   app.get('/', {
     handler: async (req) => {
       const q = req.query as z.infer<typeof ListQuery>;

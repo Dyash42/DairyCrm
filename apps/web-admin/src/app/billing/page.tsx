@@ -1,6 +1,7 @@
 'use client';
 
-import { Download, ChevronRight, Banknote, Smartphone, CreditCard } from 'lucide-react';
+import Link from 'next/link';
+import { Download, ChevronRight, Banknote, Smartphone, CreditCard, Receipt } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
 import { StatusPill } from '@/components/ui/StatusPill';
@@ -57,6 +58,24 @@ export default function BillingPage() {
       />
 
       <div className="px-8 py-6 flex-1 overflow-y-auto space-y-6">
+        {/* Tab nav */}
+        <div className="flex items-center gap-4 border-b border-divider">
+          <Link
+            href="/billing"
+            className="px-3 py-2 text-sm font-semibold text-text-primary border-b-2 border-brand"
+          >
+            <Receipt size={14} className="inline mr-1" />
+            Invoices
+          </Link>
+          <Link
+            href="/billing/payments"
+            className="px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
+          >
+            <Banknote size={14} className="inline mr-1" />
+            Payments
+          </Link>
+        </div>
+
         {/* Summary tiles */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card className="p-5">

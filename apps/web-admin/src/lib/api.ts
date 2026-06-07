@@ -204,6 +204,117 @@ export function fetchExecutives() {
   }>('/executives');
 }
 
+export function fetchExecutiveDetail(id: string) {
+  return apiFetch<{
+    id: string;
+    userId: string;
+    routeId: string | null;
+    user: { id: string; name: string; phone: string; email: string | null; active: boolean };
+    route: { id: string; name: string; area: string; pinCodes: string[] } | null;
+  }>(`/executives/${id}`);
+}
+
+export function createExecutive(input: {
+  name: string;
+  phone: string;
+  email?: string;
+  routeId?: string;
+}) {
+  return apiFetch<{ id: string }>('/executives', {
+    method: 'POST',
+    body: input,
+  });
+}
+
+export function updateExecutive(
+  id: string,
+  input: Partial<{ name: string; phone: string; email: string | null; routeId: string | null; active: boolean }>,
+) {
+  return apiFetch<{ id: string }>(`/executives/${id}`, {
+    method: 'PATCH',
+    body: input,
+  });
+}
+
+export function deactivateExecutive(id: string) {
+  return apiFetch<{ ok: true }>(`/executives/${id}`, { method: 'DELETE' });
+}
+
+// ----------------------- Routes (CRUD) -----------------------
+export function createRoute(input: {
+  name: string;
+  area: string;
+  pinCodes: string[];
+}) {
+  return apiFetch<{ id: string }>('/routes', { method: 'POST', body: input });
+}
+
+export function assignRouteExecutive(routeId: string, executiveId: string | null) {
+  return apiFetch<{ id: string }>(`/routes/${routeId}/executive`, {
+    method: 'POST',
+    body: { executiveId },
+  });
+}
+
+// ----------------------- Subscriptions -----------------------
+export interface SubscriptionRow {
+  id: string;
+  customerId: string;
+  sku: string;
+  productId: string | null;
+  litresPerDay: string | number;
+  daysOfWeek: number[];
+  ratePerLitre: string | number;
+  startDate: string;
+  endDate: string;
+  status: 'ACTIVE' | 'PAUSED' | 'CANCELLED';
+}
+
+export function pauseSubscription(id: string, body: { startDate: string; endDate: string; reason?: string }) {
+  return apiFetch<{ id: string }>(`/subscriptions/${id}/pause`, {
+    method: 'POST',
+    body,
+  });
+}
+
+export function resumeSubscription(id: string) {
+  return apiFetch<{ ok: true }>(`/subscriptions/${id}/resume`, { method: 'POST' });
+}
+
+export function cancelSubscription(id: string) {
+  return apiFetch<{ ok: true }>(`/subscriptions/${id}/cancel`, { method: 'POST' });
+}
+
+// ----------------------- Payments -----------------------
+export interface PaymentRow {
+  id: string;
+  customerId: string;
+  amount: string | number;
+  mode: 'CASH' | 'UPI' | 'CARD' | 'NETBANKING' | 'WALLET';
+  status: 'PENDING' | 'PAID' | 'FAILED';
+  reference: string | null;
+  paidAt: string | null;
+  createdAt: string;
+}
+
+export function fetchPayments(params: { customerId?: string; limit?: number } = {}) {
+  const qs = new URLSearchParams();
+  if (params.customerId) qs.set('customerId', params.customerId);
+  if (params.limit) qs.set('limit', String(params.limit));
+  const q = qs.toString();
+  return apiFetch<{ payments: PaymentRow[] }>(`/payments${q ? `?${q}` : ''}`);
+}
+
+export function recordCashPayment(input: {
+  customerId: string;
+  amount: number;
+  mode: PaymentRow['mode'];
+  reference?: string;
+  paidAt?: string;
+}) {
+  return apiFetch<PaymentRow>('/payments', { method: 'POST', body: input });
+}
+
 export function fetchBroadcasts() {
   return apiFetch<{
     broadcasts: Array<{
@@ -279,6 +390,18 @@ export function fetchHolidays() {
   return apiFetch<{
     holidays: Array<{ id: string; date: string; reason: string; scope: string }>;
   }>('/settings/holidays');
+}
+
+export interface AuditEvent {
+  ts: string;
+  kind: 'QR_REVOKED' | 'DELIVERY_SCANNED' | 'DELIVERY_MISSED';
+  customer: { id: string; name: string; code: string };
+  actor: string | null;
+  detail: string;
+}
+
+export function fetchAuditLog(limit = 100) {
+  return apiFetch<{ events: AuditEvent[] }>(`/settings/audit?limit=${limit}`);
 }
 
 // ----------------------- Products -----------------------
@@ -374,6 +497,23 @@ export function bulkCommit(rows: BulkValidatedRow[]) {
  *  browser downloads with the correct filename. Returns the URL string. */
 export function bulkTemplateUrl(): string {
   return `${API_BASE}/customers/bulk/template`;
+}
+
+/** Download all customers as a CSV — opens in browser with token in URL.
+ *  Since the endpoint is authed, we fetch then make an object URL. */
+export async function downloadCustomersCsv(filename = 'customers.csv'): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/customers/export.csv`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `Export failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /** Create a single customer (used by the Add Customer modal). */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizePhone, redactPhone } from './phone';
+import { normalizePhone, redactPhone, scrubPhones } from './phone';
 import { addDays, daysBetween, startOfDayUTC, isoDate } from './dates';
 
 describe('normalizePhone', () => {
@@ -27,6 +27,36 @@ describe('redactPhone', () => {
 
   it('returns **** for short input', () => {
     expect(redactPhone('123')).toBe('****');
+  });
+});
+
+describe('scrubPhones', () => {
+  it('masks a +91 number in free text', () => {
+    expect(scrubPhones('Customer called from +919876543210 today')).toBe(
+      'Customer called from +91*****10 today',
+    );
+  });
+
+  it('masks a bare 10-digit number', () => {
+    expect(scrubPhones('Call back at 9876543210')).toBe('Call back at +98*****10');
+  });
+
+  it('masks a spaced/dashed number', () => {
+    expect(scrubPhones('phone is +91 98765-43210 ok')).toBe('phone is +91*****10 ok');
+  });
+
+  it('leaves short order ids alone', () => {
+    expect(scrubPhones('order JHR-100390 fine')).toBe('order JHR-100390 fine');
+  });
+
+  it('handles strings without phones', () => {
+    expect(scrubPhones('subscription renewed successfully')).toBe(
+      'subscription renewed successfully',
+    );
+  });
+
+  it('handles empty input', () => {
+    expect(scrubPhones('')).toBe('');
   });
 });
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, use } from 'react';
+import { useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -9,9 +9,10 @@ import {
   MapPin,
   RefreshCw,
   Download,
-  CheckCircle2,
   Pause,
+  Play,
   XCircle,
+  Banknote,
 } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
@@ -22,6 +23,11 @@ import {
   fetchCustomerDetail,
   fetchCustomerQr,
   regenerateCustomerQr,
+  pauseSubscription,
+  resumeSubscription,
+  cancelSubscription,
+  recordCashPayment,
+  ApiError,
 } from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { formatINR, formatLitres } from '@jharanai/shared';
@@ -36,7 +42,7 @@ export default function CustomerDetailPage() {
   const params = useParams() as { id: string };
   const customerId = params.id;
 
-  const { data: customer, source } = useApiWithFallback(
+  const { data: customer, source, reload: reloadDetail } = useApiWithFallback(
     () => fetchCustomerDetail(customerId),
     (raw) => raw,
     null as Awaited<ReturnType<typeof fetchCustomerDetail>> | null,
@@ -51,6 +57,43 @@ export default function CustomerDetailPage() {
   );
 
   const [regenerating, setRegenerating] = useState(false);
+  const [pauseFor, setPauseFor] = useState<string | null>(null); // subscription id
+  const [payOpen, setPayOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function onResume(subId: string) {
+    setActionError(null);
+    try {
+      await resumeSubscription(subId);
+      reloadCustomer();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : 'Resume failed');
+    }
+  }
+
+  async function onCancelSub(subId: string) {
+    const ok = window.confirm(
+      'Cancel this subscription? Future deliveries will stop. This cannot be undone.',
+    );
+    if (!ok) return;
+    setActionError(null);
+    try {
+      await cancelSubscription(subId);
+      reloadCustomer();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : 'Cancel failed');
+    }
+  }
+
+  // Reload helper: useApiWithFallback's data lives in `customer` but we need
+  // to refetch after mutations.
+  // We trigger this by toggling a key/refetch. Since the hook doesn't expose
+  // it here, the simplest path is window.location.reload(); the cleaner path
+  // is using the hook's reload(). The hook does return reload — use it.
+  function reloadCustomer() {
+    // reload provided by the hook below
+    reloadDetail();
+  }
 
   async function onRegenerate() {
     const reason = window.prompt(
@@ -128,7 +171,18 @@ export default function CustomerDetailPage() {
               </div>
             </div>
           </div>
+          <div className="flex flex-col gap-2">
+            <button onClick={() => setPayOpen(true)} className="btn-primary">
+              <Banknote size={14} /> Record payment
+            </button>
+          </div>
         </Card>
+
+        {actionError && (
+          <div className="bg-danger-light text-danger-dark text-sm rounded-lg p-3">
+            {actionError}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* QR card */}
@@ -209,6 +263,33 @@ export default function CustomerDetailPage() {
                         <StatusPill tone={STATUS_TONE[s.status] ?? 'muted'}>
                           {s.status}
                         </StatusPill>
+                        {s.status === 'ACTIVE' && (
+                          <>
+                            <button
+                              onClick={() => setPauseFor(s.id)}
+                              className="btn-secondary py-1 px-2 text-xs"
+                              title="Pause subscription"
+                            >
+                              <Pause size={12} /> Pause
+                            </button>
+                            <button
+                              onClick={() => onCancelSub(s.id)}
+                              className="btn-secondary py-1 px-2 text-xs text-danger-dark"
+                              title="Cancel subscription"
+                            >
+                              <XCircle size={12} /> Cancel
+                            </button>
+                          </>
+                        )}
+                        {s.status === 'PAUSED' && (
+                          <button
+                            onClick={() => onResume(s.id)}
+                            className="btn-secondary py-1 px-2 text-xs text-success-dark"
+                            title="Resume subscription"
+                          >
+                            <Play size={12} /> Resume
+                          </button>
+                        )}
                       </div>
                     </li>
                   ))}
@@ -268,6 +349,27 @@ export default function CustomerDetailPage() {
           </CardBody>
         </Card>
 
+        {pauseFor && (
+          <PauseModal
+            subscriptionId={pauseFor}
+            onClose={() => setPauseFor(null)}
+            onDone={() => {
+              setPauseFor(null);
+              reloadDetail();
+            }}
+          />
+        )}
+        {payOpen && (
+          <RecordPaymentModal
+            customerId={customerId}
+            onClose={() => setPayOpen(false)}
+            onDone={() => {
+              setPayOpen(false);
+              reloadDetail();
+            }}
+          />
+        )}
+
         {/* Pause history */}
         <Card>
           <CardHeader
@@ -309,3 +411,256 @@ function EmptyState({ message }: { message: string }) {
     <div className="py-8 text-center text-text-muted text-sm">{message}</div>
   );
 }
+
+interface CustomerDetailPageProps {
+  // No-op; types live inline above. This export is here to keep the file
+  // self-contained.
+}
+
+// --- Modals are rendered conditionally from the main component ---
+
+function PauseModal({
+  subscriptionId,
+  onClose,
+  onDone,
+}: {
+  subscriptionId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const [form, setForm] = useState({
+    startDate: today,
+    endDate: tomorrow,
+    reason: '',
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await pauseSubscription(subscriptionId, form);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Pause failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <form
+        onSubmit={submit}
+        className="bg-surface rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4"
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-text-primary">
+            Pause subscription
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-text-muted hover:text-text-primary text-xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        <p className="text-sm text-text-secondary">
+          Deliveries between these dates will be skipped. Auto-resume happens
+          the day after the end date.
+        </p>
+
+        <label className="block">
+          <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
+            Start date
+          </span>
+          <input
+            type="date"
+            value={form.startDate}
+            onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))}
+            className="input w-full mt-1.5 tabular"
+            required
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
+            End date
+          </span>
+          <input
+            type="date"
+            value={form.endDate}
+            onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))}
+            className="input w-full mt-1.5 tabular"
+            required
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
+            Reason (optional)
+          </span>
+          <input
+            value={form.reason}
+            onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))}
+            placeholder="Out of town"
+            className="input w-full mt-1.5"
+          />
+        </label>
+
+        {error && (
+          <div className="bg-danger-light text-danger-dark text-sm rounded-lg p-3">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="btn-primary disabled:opacity-50"
+          >
+            {submitting ? 'Pausing…' : 'Pause subscription'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function RecordPaymentModal({
+  customerId,
+  onClose,
+  onDone,
+}: {
+  customerId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [form, setForm] = useState({
+    amount: '',
+    mode: 'CASH' as 'CASH' | 'UPI' | 'CARD' | 'NETBANKING' | 'WALLET',
+    reference: '',
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await recordCashPayment({
+        customerId,
+        amount: Number(form.amount),
+        mode: form.mode,
+        reference: form.reference || undefined,
+      });
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not record payment');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <form
+        onSubmit={submit}
+        className="bg-surface rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4"
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-text-primary">
+            Record payment
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-text-muted hover:text-text-primary text-xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        <p className="text-sm text-text-secondary">
+          Use this for cash or off-platform payments you want reflected on the
+          customer ledger. The amount is added to balance immediately.
+        </p>
+
+        <label className="block">
+          <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
+            Amount (₹) <span className="text-danger">*</span>
+          </span>
+          <input
+            required
+            type="number"
+            step="0.01"
+            min="0.01"
+            value={form.amount}
+            onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+            className="input w-full mt-1.5 tabular"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
+            Mode
+          </span>
+          <select
+            value={form.mode}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, mode: e.target.value as typeof f.mode }))
+            }
+            className="input w-full mt-1.5"
+          >
+            <option value="CASH">Cash</option>
+            <option value="UPI">UPI</option>
+            <option value="CARD">Card</option>
+            <option value="NETBANKING">Net banking</option>
+            <option value="WALLET">Wallet</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
+            Reference (optional)
+          </span>
+          <input
+            value={form.reference}
+            onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))}
+            placeholder="UPI ref / receipt no."
+            className="input w-full mt-1.5 tabular"
+          />
+        </label>
+
+        {error && (
+          <div className="bg-danger-light text-danger-dark text-sm rounded-lg p-3">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="btn-primary disabled:opacity-50"
+          >
+            {submitting ? 'Recording…' : 'Record payment'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// Suppress unused-export warning
+export type { CustomerDetailPageProps };

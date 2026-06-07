@@ -42,11 +42,32 @@ export interface BuildOptions {
 
 export async function buildServer(opts: BuildOptions = {}): Promise<App> {
   const config = loadConfig();
+
+  // Pino path-redact: hides authorization headers + obvious PII fields from
+  // every log line. The "*.phone" wildcards cover req.body.phone,
+  // payload.customer.phone, etc. Pair with the scrub-phones serializer below
+  // for any phone-like substring inside `msg` strings.
+  const redactPaths = [
+    'req.headers.authorization',
+    'req.headers.cookie',
+    'req.headers["x-razorpay-signature"]',
+    'req.headers["x-webhook-signature"]',
+    'req.headers["x-hub-signature-256"]',
+    'req.body.password',
+    'req.body.phone',
+    'req.body.altPhone',
+    'req.body.otp',
+    'req.body.code',
+    '*.phone',
+    '*.altPhone',
+    '*.otp',
+  ];
+
   const app = Fastify({
     logger:
       config.NODE_ENV === 'production'
-        ? { level: 'info' }
-        : { level: 'warn' },
+        ? { level: 'info', redact: { paths: redactPaths, censor: '[redacted]' } }
+        : { level: 'warn', redact: { paths: redactPaths, censor: '[redacted]' } },
     disableRequestLogging: true,
     trustProxy: true,
   });

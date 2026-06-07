@@ -73,4 +73,74 @@ export async function registerSettingsRoutes(app: App) {
       return { ok: true };
     },
   });
+
+  /**
+   * GET /settings/audit
+   *
+   * Merges two audit-shaped data sources into one unified feed for admins:
+   *   - QrCode rows in REVOKED status: who revoked, when, why
+   *   - Recent Delivery rows: scanned vs missed; supports drilling into
+   *     who delivered what
+   *
+   * Pagination is by limit (max 200) per stream. The merge is server-side
+   * so the UI is one simple list to render.
+   */
+  app.get('/audit', {
+    handler: async (req) => {
+      const { limit: limitRaw } = (req.query as { limit?: string }) ?? {};
+      const limit = limitRaw ? Math.min(200, Math.max(1, Number(limitRaw))) : 50;
+
+      const [revokedQrs, recentDeliveries] = await Promise.all([
+        prisma.qrCode.findMany({
+          where: { status: 'REVOKED' },
+          orderBy: { revokedAt: 'desc' },
+          take: limit,
+          include: {
+            customer: { select: { id: true, name: true, code: true } },
+          },
+        }),
+        prisma.delivery.findMany({
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          include: {
+            customer: { select: { id: true, name: true, code: true } },
+            executive: { include: { user: { select: { name: true } } } },
+          },
+        }),
+      ]);
+
+      const events: Array<{
+        ts: string;
+        kind: 'QR_REVOKED' | 'DELIVERY_SCANNED' | 'DELIVERY_MISSED';
+        customer: { id: string; name: string; code: string };
+        actor: string | null;
+        detail: string;
+      }> = [];
+
+      for (const q of revokedQrs) {
+        events.push({
+          ts: (q.revokedAt ?? q.generatedAt).toISOString(),
+          kind: 'QR_REVOKED',
+          customer: q.customer,
+          actor: q.revokedBy,
+          detail: `QR v${q.version} revoked — ${q.reason ?? 'no reason given'}`,
+        });
+      }
+      for (const d of recentDeliveries) {
+        const wasDelivered = d.status === 'DELIVERED' || d.status === 'PARTIAL';
+        events.push({
+          ts: d.createdAt.toISOString(),
+          kind: wasDelivered ? 'DELIVERY_SCANNED' : 'DELIVERY_MISSED',
+          customer: d.customer,
+          actor: d.executive?.user.name ?? null,
+          detail: wasDelivered
+            ? `Delivered ${Number(d.deliveredLitres ?? d.scheduledLitres).toFixed(1)}L`
+            : `${d.status}: ${d.note ?? 'no note'}`,
+        });
+      }
+
+      events.sort((a, b) => b.ts.localeCompare(a.ts));
+      return { events: events.slice(0, limit) };
+    },
+  });
 }

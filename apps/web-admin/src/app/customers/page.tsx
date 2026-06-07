@@ -14,7 +14,13 @@ import {
   getInitials,
   getRouteName,
 } from '@/lib/mock-data';
-import { fetchCustomers, fetchRoutes, createCustomer, ApiError } from '@/lib/api';
+import {
+  fetchCustomers,
+  fetchRoutes,
+  createCustomer,
+  downloadCustomersCsv,
+  ApiError,
+} from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import {
   formatINR,
@@ -42,6 +48,19 @@ export default function CustomersPage() {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [query, setQuery] = useState('');
   const [addOpen, setAddOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  async function onExport() {
+    setExporting(true);
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      await downloadCustomersCsv(`jharanai-customers-${today}.csv`);
+    } catch (e) {
+      window.alert(e instanceof ApiError ? e.message : 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const { data: customers } = useApiWithFallback(
     () =>
@@ -123,9 +142,13 @@ export default function CustomersPage() {
               <Plus size={16} />
               Add customer
             </button>
-            <button className="btn-secondary">
+            <button
+              onClick={onExport}
+              disabled={exporting}
+              className="btn-secondary disabled:opacity-50"
+            >
               <Download size={16} />
-              Export
+              {exporting ? 'Exporting…' : 'Export'}
             </button>
           </div>
         </div>

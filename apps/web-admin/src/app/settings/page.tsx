@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Save, Plus } from 'lucide-react';
+import Link from 'next/link';
+import { Save, Plus, ShieldAlert } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import { fetchSettings, updateSetting, fetchHolidays, type SettingRow } from '@/lib/api';
@@ -86,6 +87,22 @@ export default function SettingsPage() {
       />
 
       <div className="px-8 py-6 flex-1 overflow-y-auto space-y-6 max-w-4xl">
+        <Link
+          href="/settings/audit"
+          className="flex items-center justify-between p-4 rounded-xl bg-warning-light hover:bg-warning-light/70 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <ShieldAlert size={20} className="text-warning-dark" />
+            <div>
+              <div className="font-semibold text-text-primary">Audit log</div>
+              <div className="text-xs text-text-secondary">
+                QR revocations and delivery events — last 200
+              </div>
+            </div>
+          </div>
+          <span className="text-sm text-text-secondary">View →</span>
+        </Link>
+
         {Object.entries(groups).map(([groupKey, rows]) => {
           const meta = GROUP_META[groupKey] ?? { title: groupKey, subtitle: '' };
           return (

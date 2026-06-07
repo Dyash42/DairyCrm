@@ -15,6 +15,7 @@ import '../widgets/route_complete_card.dart';
 import '../widgets/route_header.dart';
 import '../widgets/stop_card.dart';
 import 'end_of_day_screen.dart';
+import 'profile_screen.dart';
 import 'qr_scanner_screen.dart';
 
 class TodaysRouteScreen extends ConsumerStatefulWidget {
@@ -337,6 +338,17 @@ class _DevDrawer extends ConsumerWidget {
             _modeTile(ref, mode, DemoMode.routeComplete,
                 'Demo: Route complete · 9/10', Icons.task_alt_rounded),
             const Divider(),
+            ListTile(
+              leading: const Icon(Icons.person_outline,
+                  color: JharanaiTokens.textPrimary),
+              title: const Text('Account & help'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                );
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.logout_rounded,
                   color: JharanaiTokens.dangerDark),

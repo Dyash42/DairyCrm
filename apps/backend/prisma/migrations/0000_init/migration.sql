@@ -14,6 +14,12 @@ CREATE TYPE "AutoResumeStatus" AS ENUM ('PENDING', 'REMINDED', 'RESUMED', 'FAILE
 CREATE TYPE "RenewalReminderStatus" AS ENUM ('PENDING', 'SENT', 'RENEWED', 'EXPIRED', 'CANCELLED');
 
 -- CreateEnum
+CREATE TYPE "ProductCategory" AS ENUM ('MILK', 'CURD', 'GHEE', 'BUTTER', 'PANEER', 'OTHER');
+
+-- CreateEnum
+CREATE TYPE "SettingType" AS ENUM ('STRING', 'NUMBER', 'BOOLEAN', 'JSON');
+
+-- CreateEnum
 CREATE TYPE "QrCodeStatus" AS ENUM ('ACTIVE', 'REVOKED');
 
 -- CreateEnum
@@ -103,6 +109,7 @@ CREATE TABLE "Customer" (
 CREATE TABLE "Subscription" (
     "id" TEXT NOT NULL,
     "customerId" TEXT NOT NULL,
+    "productId" TEXT,
     "sku" TEXT NOT NULL DEFAULT 'COW_MILK',
     "litresPerDay" DECIMAL(6,2) NOT NULL,
     "daysOfWeek" INTEGER[],
@@ -160,6 +167,40 @@ CREATE TABLE "RenewalReminder" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "RenewalReminder_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Product" (
+    "id" TEXT NOT NULL,
+    "code" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "category" "ProductCategory" NOT NULL DEFAULT 'MILK',
+    "ratePerUnit" DECIMAL(10,2) NOT NULL,
+    "unit" TEXT NOT NULL DEFAULT 'L',
+    "active" BOOLEAN NOT NULL DEFAULT true,
+    "imageUrl" TEXT,
+    "sortOrder" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedBy" TEXT,
+
+    CONSTRAINT "Product_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Setting" (
+    "key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    "type" "SettingType" NOT NULL,
+    "group" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "description" TEXT,
+    "editable" BOOLEAN NOT NULL DEFAULT true,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedBy" TEXT,
+
+    CONSTRAINT "Setting_pkey" PRIMARY KEY ("key")
 );
 
 -- CreateTable
@@ -304,6 +345,9 @@ CREATE INDEX "Customer_phone_idx" ON "Customer"("phone");
 CREATE INDEX "Subscription_customerId_status_idx" ON "Subscription"("customerId", "status");
 
 -- CreateIndex
+CREATE INDEX "Subscription_productId_idx" ON "Subscription"("productId");
+
+-- CreateIndex
 CREATE INDEX "PauseRecord_subscriptionId_idx" ON "PauseRecord"("subscriptionId");
 
 -- CreateIndex
@@ -323,6 +367,18 @@ CREATE INDEX "RenewalReminder_status_dueDate_idx" ON "RenewalReminder"("status",
 
 -- CreateIndex
 CREATE INDEX "RenewalReminder_customerId_idx" ON "RenewalReminder"("customerId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Product_code_key" ON "Product"("code");
+
+-- CreateIndex
+CREATE INDEX "Product_active_sortOrder_idx" ON "Product"("active", "sortOrder");
+
+-- CreateIndex
+CREATE INDEX "Product_category_idx" ON "Product"("category");
+
+-- CreateIndex
+CREATE INDEX "Setting_group_idx" ON "Setting"("group");
 
 -- CreateIndex
 CREATE INDEX "QrCode_customerId_status_idx" ON "QrCode"("customerId", "status");
@@ -370,6 +426,9 @@ ALTER TABLE "Customer" ADD CONSTRAINT "Customer_routeId_fkey" FOREIGN KEY ("rout
 ALTER TABLE "Subscription" ADD CONSTRAINT "Subscription_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "Subscription" ADD CONSTRAINT "Subscription_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "PauseRecord" ADD CONSTRAINT "PauseRecord_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "Subscription"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -408,13 +467,3 @@ ALTER TABLE "BroadcastRoute" ADD CONSTRAINT "BroadcastRoute_routeId_fkey" FOREIG
 -- AddForeignKey
 ALTER TABLE "WhatsAppLog" ADD CONSTRAINT "WhatsAppLog_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
-┌─────────────────────────────────────────────────────────┐
-│  Update available 5.22.0 -> 7.8.0                       │
-│                                                         │
-│  This is a major update - please follow the guide at    │
-│  https://pris.ly/d/major-version-upgrade                │
-│                                                         │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-└─────────────────────────────────────────────────────────┘

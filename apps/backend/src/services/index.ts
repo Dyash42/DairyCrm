@@ -7,3 +7,4 @@ export * from './customer-code';
 export * from './qrcode';
 export * from './subscription-calc';
 export * from './scheduling';
+export * from './settings';

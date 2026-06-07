@@ -1,23 +1,23 @@
 /**
  * Settings module.
  *
- * GET  /settings          — read all settings
- * PUT  /settings/rates    — update rate per litre per SKU
- * GET  /settings/holidays — list holiday calendar
- * POST /settings/holidays — add a holiday
- * DEL  /settings/holidays/:id — remove a holiday
+ *   GET    /settings                — all settings grouped, with current
+ *                                     value + isDefault flag
+ *   PUT    /settings/:key           — update a single setting (admin only)
+ *   GET    /settings/holidays       — list holiday calendar
+ *   POST   /settings/holidays       — add a holiday
+ *   DELETE /settings/holidays/:id   — remove a holiday
  *
- * Rates are stored in a single-row Setting table keyed by SKU. Until the
- * SettingValue model is added (Phase 5+) this returns the constants
- * defaults so the admin UI shows something sensible. The PUT route is a
- * no-op stub awaiting that schema migration.
+ * Settings live in the `Setting` table; defaults are defined in
+ * SETTING_DEFINITIONS. The admin UI reads /settings to render labels +
+ * current values; PUTs the new value with the same key.
  */
 
 import type { App } from '../../types';
 import { z } from 'zod';
 
 import { prisma } from '../../prisma';
-import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
+import { settings } from '../../services/settings';
 import { notFound } from '../../utils/http';
 
 const HolidayBody = z.object({
@@ -26,25 +26,26 @@ const HolidayBody = z.object({
   scope: z.string().default('ALL'),
 });
 
+const SettingUpdateBody = z.object({
+  value: z.unknown(),
+});
+
 export async function registerSettingsRoutes(app: App) {
   app.addHook('onRequest', app.authenticate);
 
   app.get('/', async () => {
-    return {
-      rates: {
-        COW_MILK: DEFAULT_RATE_PER_LITRE_INR,
-        BUFFALO_MILK: 78,
-        A2_MILK: 110,
-      },
-      skus: [
-        { code: 'COW_MILK', name: 'Cow milk', active: true },
-        { code: 'BUFFALO_MILK', name: 'Buffalo milk', active: true },
-        { code: 'A2_MILK', name: 'A2 milk', active: false },
-        { code: 'CURD_500', name: 'Curd 500g', active: true },
-        { code: 'GHEE_200', name: 'Ghee 200ml', active: false },
-      ],
-      deliveryWindow: { morningStart: '05:30', morningEnd: '08:30' },
-    };
+    const grouped = await settings.listAllGrouped();
+    return { groups: grouped };
+  });
+
+  app.put('/:key', {
+    handler: async (req, reply) => {
+      const { key } = req.params as { key: string };
+      const { value } = SettingUpdateBody.parse(req.body);
+      const me = req.user;
+      await settings.set(key, value, me.sub);
+      return reply.status(200).send({ ok: true, key, value });
+    },
   });
 
   app.get('/holidays', async () => {
@@ -70,15 +71,6 @@ export async function registerSettingsRoutes(app: App) {
       const deleted = await prisma.holidayCalendar.delete({ where: { id } }).catch(() => null);
       if (!deleted) return notFound(reply, 'Holiday');
       return { ok: true };
-    },
-  });
-
-  app.put('/rates', {
-    handler: async (req) => {
-      // TODO: persist to SettingValue table once added. For now: read back
-      // what was sent so the UI's "Saved" state is honest.
-      const body = req.body as Record<string, number>;
-      return { ok: true, rates: body };
     },
   });
 }

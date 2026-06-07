@@ -12,6 +12,7 @@ import {
   Droplet,
   LogOut,
   Megaphone,
+  Package,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -31,6 +32,7 @@ const OPERATIONS: NavItem[] = [
 
 const MANAGE: NavItem[] = [
   { href: '/executives', label: 'Executives', icon: UserCog },
+  { href: '/products', label: 'Products', icon: Package },
   { href: '/broadcasts', label: 'Broadcasts', icon: Megaphone },
   { href: '/billing', label: 'Billing', icon: Receipt },
   { href: '/settings', label: 'Settings', icon: Settings },

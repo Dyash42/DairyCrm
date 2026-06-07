@@ -234,18 +234,71 @@ export function fetchInvoices(period?: string) {
   }>(`/billing/invoices${q}`);
 }
 
+export interface SettingRow {
+  key: string;
+  group: string;
+  label: string;
+  description?: string;
+  type: 'STRING' | 'NUMBER' | 'BOOLEAN' | 'JSON';
+  value: unknown;
+  isDefault: boolean;
+  editable?: boolean;
+}
+
 export function fetchSettings() {
-  return apiFetch<{
-    rates: Record<string, number>;
-    skus: Array<{ code: string; name: string; active: boolean }>;
-    deliveryWindow: { morningStart: string; morningEnd: string };
-  }>('/settings');
+  return apiFetch<{ groups: Record<string, SettingRow[]> }>('/settings');
+}
+
+export function updateSetting(key: string, value: unknown) {
+  return apiFetch<{ ok: true; key: string; value: unknown }>(
+    `/settings/${encodeURIComponent(key)}`,
+    { method: 'PUT', body: { value } },
+  );
 }
 
 export function fetchHolidays() {
   return apiFetch<{
     holidays: Array<{ id: string; date: string; reason: string; scope: string }>;
   }>('/settings/holidays');
+}
+
+// ----------------------- Products -----------------------
+export interface ProductRow {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  category: 'MILK' | 'CURD' | 'GHEE' | 'BUTTER' | 'PANEER' | 'OTHER';
+  ratePerUnit: string | number;
+  unit: string;
+  active: boolean;
+  imageUrl: string | null;
+  sortOrder: number;
+}
+
+export function fetchProducts() {
+  return apiFetch<{ products: ProductRow[] }>('/products');
+}
+
+export function createProduct(input: {
+  code: string;
+  name: string;
+  description?: string;
+  category: ProductRow['category'];
+  ratePerUnit: number;
+  unit: string;
+  active?: boolean;
+  sortOrder?: number;
+}) {
+  return apiFetch<ProductRow>('/products', { method: 'POST', body: input });
+}
+
+export function updateProduct(id: string, input: Partial<Parameters<typeof createProduct>[0]>) {
+  return apiFetch<ProductRow>(`/products/${id}`, { method: 'PATCH', body: input });
+}
+
+export function deleteProduct(id: string) {
+  return apiFetch<{ ok: true }>(`/products/${id}`, { method: 'DELETE' });
 }
 
 // ----------------------- Shared payload shapes -----------------------

@@ -125,9 +125,16 @@ model Subscription {
   id           String             @id @default(cuid())
   customerId   String
   customer     Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  /// Stable product reference. Optional for back-compat with sku strings.
+  productId    String?
+  product      Product?           @relation(fields: [productId], references: [id])
+  /// Legacy SKU string — kept so older rows still resolve a name when
+  /// product is null. New rows should always set productId.
   sku          String             @default("COW_MILK")
   litresPerDay Decimal            @db.Decimal(6, 2)
   daysOfWeek   Int[] // 0=Sun .. 6=Sat
+  /// Cached rate at the time of subscription creation. Lets us replay a
+  /// historical quote even if the Product's rate later changes.
   ratePerLitre Decimal            @db.Decimal(8, 2)
   startDate    DateTime
   endDate      DateTime?
@@ -139,6 +146,7 @@ model Subscription {
   renewalReminders RenewalReminder[]
 
   @@index([customerId, status])
+  @@index([productId])
 }
 
 model PauseRecord {
@@ -214,6 +222,71 @@ model RenewalReminder {
 
   @@index([status, dueDate])
   @@index([customerId])
+}
+
+/// Sellable product / SKU. Admin can add new ones (ghee, butter, paneer…)
+/// and edit rates without code changes. Subscriptions reference Product by
+/// id; legacy Subscription.sku string is kept for back-compat.
+enum ProductCategory {
+  MILK
+  CURD
+  GHEE
+  BUTTER
+  PANEER
+  OTHER
+}
+
+model Product {
+  id          String          @id @default(cuid())
+  /// Stable upper-case code referenced by code (COW_MILK, GHEE_200ML).
+  code        String          @unique
+  name        String
+  description String?
+  category    ProductCategory @default(MILK)
+  /// Price per `unit` in INR.
+  ratePerUnit Decimal         @db.Decimal(10, 2)
+  /// Unit string: 'L', 'kg', 'g', 'ml', 'pcs'.
+  unit        String          @default("L")
+  active      Boolean         @default(true)
+  imageUrl    String?
+  sortOrder   Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  updatedBy   String?
+
+  subscriptions Subscription[]
+
+  @@index([active, sortOrder])
+  @@index([category])
+}
+
+/// Generic key/value settings table — admin can edit any value from the
+/// admin Settings page. Each setting has a group (for UI grouping), a
+/// human-readable label, and an optional description. The `constants.ts`
+/// values act as defaults when no row exists (fresh DB / dev).
+enum SettingType {
+  STRING
+  NUMBER
+  BOOLEAN
+  JSON
+}
+
+model Setting {
+  /// Dotted key, e.g. 'subscription.default_duration_days'.
+  key         String      @id
+  /// JSON-stringified value (cast by SettingsService based on `type`).
+  value       String
+  type        SettingType
+  /// UI grouping: 'subscription', 'pause', 'otp', 'delivery', etc.
+  group       String
+  label       String
+  description String?
+  /// false → setting is read-only in admin UI (managed by env).
+  editable    Boolean     @default(true)
+  updatedAt   DateTime    @updatedAt
+  updatedBy   String?
+
+  @@index([group])
 }
 
 /// Atomic counter for human-readable customer codes (JHR-100455).

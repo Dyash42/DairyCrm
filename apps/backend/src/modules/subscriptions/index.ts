@@ -20,15 +20,22 @@ import {
 
 import { prisma } from '../../prisma';
 import { calculateQuote, DAYS_OF_WEEK } from '../../services/subscription-calc';
+import { settings } from '../../services/settings';
 
 const CreateBody = z.object({
   customerId: z.string(),
+  /** New: pick by product id; we look up rate from the Product row. */
+  productId: z.string().optional(),
+  /** Legacy: SKU string. Kept for back-compat. */
   sku: z.string().default('COW_MILK'),
   litresPerDay: z.coerce.number().min(0.1).max(50),
   daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1),
-  ratePerLitre: z.coerce.number().min(0.01).max(10000),
+  /** Optional override — admin-only "special rate" customers. If omitted,
+   *  the Product's current ratePerUnit is used (cached on the row). */
+  ratePerLitre: z.coerce.number().min(0.01).max(10000).optional(),
   startDate: z.coerce.date(),
-  durationDays: z.coerce.number().int().min(1).max(365),
+  /** Optional — falls back to subscription.default_duration_days setting. */
+  durationDays: z.coerce.number().int().min(1).max(365).optional(),
 });
 
 const PauseBody = z.object({
@@ -53,33 +60,59 @@ export async function registerSubscriptionRoutes(app: App) {
 
   app.post('/', {
     handler: async (req, reply) => {
-      const body = req.body as z.infer<typeof CreateBody>;
+      const body = CreateBody.parse(req.body);
+
+      // Resolve rate + sku from Product if productId given
+      let productId: string | null = body.productId ?? null;
+      let sku = body.sku;
+      let rate = body.ratePerLitre;
+      if (productId) {
+        const product = await prisma.product.findUnique({ where: { id: productId } });
+        if (!product) {
+          return reply.status(422).send({ error: 'Unknown productId' });
+        }
+        sku = product.code;
+        rate = rate ?? Number(product.ratePerUnit);
+      }
+      if (rate === undefined || rate <= 0) {
+        return reply.status(422).send({ error: 'ratePerLitre or productId required' });
+      }
+
+      // Defaults sourced from Settings (admin-editable)
+      const durationDays =
+        body.durationDays ??
+        (await settings.getNumber('subscription.default_duration_days', 30));
+      const renewalLeadDays = await settings.getNumber(
+        'subscription.renewal_reminder_days_before',
+        3,
+      );
+
       const quote = calculateQuote({
         litresPerDay: body.litresPerDay,
-        ratePerLitre: body.ratePerLitre,
+        ratePerLitre: rate,
         daysOfWeek: body.daysOfWeek as never,
         startDate: body.startDate,
-        durationDays: body.durationDays,
+        durationDays,
       });
       const endDate = new Date(body.startDate);
-      endDate.setUTCDate(endDate.getUTCDate() + body.durationDays);
+      endDate.setUTCDate(endDate.getUTCDate() + durationDays);
 
       const sub = await prisma.$transaction(async (tx) => {
         const created = await tx.subscription.create({
           data: {
             customerId: body.customerId,
-            sku: body.sku,
+            productId,
+            sku,
             litresPerDay: body.litresPerDay,
             daysOfWeek: body.daysOfWeek,
-            ratePerLitre: body.ratePerLitre,
+            ratePerLitre: rate,
             startDate: body.startDate,
             endDate,
             status: SubscriptionStatus.ACTIVE,
           },
         });
-        // Queue renewal reminder 3 days before endDate
         const dueDate = new Date(endDate);
-        dueDate.setUTCDate(dueDate.getUTCDate() - 3);
+        dueDate.setUTCDate(dueDate.getUTCDate() - renewalLeadDays);
         await tx.renewalReminder.create({
           data: {
             subscriptionId: created.id,
@@ -101,9 +134,19 @@ export async function registerSubscriptionRoutes(app: App) {
   app.post('/:id/pause', {
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
-      const body = req.body as z.infer<typeof PauseBody>;
+      const body = PauseBody.parse(req.body);
       if (body.endDate < body.startDate) {
         return reply.status(422).send({ error: 'endDate must be ≥ startDate' });
+      }
+
+      // Admin-configurable cap on pause length
+      const maxPauseDays = await settings.getNumber('pause.max_days', 60);
+      const requestedDays =
+        Math.round((body.endDate.getTime() - body.startDate.getTime()) / 86_400_000) + 1;
+      if (requestedDays > maxPauseDays) {
+        return reply
+          .status(422)
+          .send({ error: `Pause cannot exceed ${maxPauseDays} days (requested ${requestedDays}).` });
       }
 
       const sub = await prisma.subscription.findUnique({ where: { id } });

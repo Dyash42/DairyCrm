@@ -6,7 +6,7 @@
  * Idempotent: uses `upsert` everywhere so running twice is safe.
  */
 
-import { PrismaClient, UserRole, CustomerStatus } from '@prisma/client';
+import { PrismaClient, UserRole, CustomerStatus, ProductCategory, SettingType } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -157,6 +157,46 @@ async function main() {
     });
   }
   console.log(`[seed] holidays: ${holidays.length}`);
+
+  // --- Products --- the SKUs admins start with; they can add more anytime
+  const products = [
+    { code: 'COW_MILK', name: 'Cow milk', category: ProductCategory.MILK, ratePerUnit: 64, unit: 'L', sortOrder: 1 },
+    { code: 'BUFFALO_MILK', name: 'Buffalo milk', category: ProductCategory.MILK, ratePerUnit: 78, unit: 'L', sortOrder: 2 },
+    { code: 'A2_MILK', name: 'A2 milk', category: ProductCategory.MILK, ratePerUnit: 110, unit: 'L', sortOrder: 3, active: false },
+    { code: 'CURD_500', name: 'Curd 500g', category: ProductCategory.CURD, ratePerUnit: 55, unit: 'pcs', sortOrder: 10 },
+    { code: 'GHEE_200', name: 'Ghee 200ml', category: ProductCategory.GHEE, ratePerUnit: 280, unit: 'pcs', sortOrder: 20, active: false },
+  ];
+  for (const p of products) {
+    await prisma.product.upsert({
+      where: { code: p.code },
+      create: { ...p, active: p.active ?? true },
+      update: { name: p.name, category: p.category, ratePerUnit: p.ratePerUnit, unit: p.unit, sortOrder: p.sortOrder },
+    });
+  }
+  console.log(`[seed] products: ${products.length}`);
+
+  // --- Settings --- write defaults so the admin Settings page renders with
+  // editable rows out of the box. SettingsService still falls back to the
+  // defaults if a row is missing, so deleting a row is safe.
+  const settings = [
+    { key: 'subscription.default_duration_days', value: '30', type: SettingType.NUMBER, group: 'subscription', label: 'Default subscription length (days)' },
+    { key: 'subscription.renewal_reminder_days_before', value: '3', type: SettingType.NUMBER, group: 'subscription', label: 'Renewal reminder window (days before expiry)' },
+    { key: 'pause.max_days', value: '60', type: SettingType.NUMBER, group: 'pause', label: 'Maximum pause length (days)' },
+    { key: 'delivery.morning_window_start', value: '"05:30"', type: SettingType.STRING, group: 'delivery', label: 'Morning delivery window start' },
+    { key: 'delivery.morning_window_end', value: '"08:30"', type: SettingType.STRING, group: 'delivery', label: 'Morning delivery window end' },
+    { key: 'customer.code_prefix', value: '"JHR"', type: SettingType.STRING, group: 'customer', label: 'Customer code prefix' },
+    { key: 'otp.length', value: '6', type: SettingType.NUMBER, group: 'otp', label: 'OTP digit length' },
+    { key: 'otp.expiry_minutes', value: '5', type: SettingType.NUMBER, group: 'otp', label: 'OTP expiry (minutes)' },
+    { key: 'business.brand_name', value: '"Jharanai"', type: SettingType.STRING, group: 'business', label: 'Brand name' },
+  ];
+  for (const s of settings) {
+    await prisma.setting.upsert({
+      where: { key: s.key },
+      create: s,
+      update: { label: s.label, group: s.group, type: s.type },
+    });
+  }
+  console.log(`[seed] settings: ${settings.length}`);
 
   console.log('[seed] done.');
 }

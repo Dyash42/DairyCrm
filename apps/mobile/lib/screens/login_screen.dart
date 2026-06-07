@@ -1,25 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/error.dart';
+import '../auth/auth_provider.dart';
 import '../theme/tokens.dart';
-import 'todays_route_screen.dart';
 
-/// Phone + OTP login.
+/// Two-step login:
+///   1. Phone → POST /auth/executive/otp/request
+///   2. OTP   → POST /auth/executive/otp/verify  → JWT
 ///
-/// Real flow: send OTP via Meta WhatsApp Authentication template OR SMS,
-/// verify on backend, store JWT in flutter_secure_storage.
-/// For now: enter anything → land on Today's Route.
-class LoginScreen extends StatefulWidget {
+/// After successful verify, AuthController flips state to AuthSignedIn
+/// and the router widget switches to TodaysRouteScreen. We do NOT
+/// Navigator.push here — the routing layer reacts to auth state.
+class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _phone = TextEditingController();
   final _otp = TextEditingController();
   bool _otpSent = false;
   bool _loading = false;
+  String? _error;
 
   @override
   void dispose() {
@@ -29,33 +34,66 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _requestOtp() async {
-    if (_phone.text.length < 10) {
-      _toast('Enter a valid 10-digit phone number');
+    if (_phone.text.replaceAll(RegExp(r'\D'), '').length < 10) {
+      setState(() => _error = 'Enter a valid 10-digit phone number');
       return;
     }
-    setState(() => _loading = true);
-    await Future<void>.delayed(const Duration(milliseconds: 600));
     setState(() {
-      _loading = false;
-      _otpSent = true;
+      _loading = true;
+      _error = null;
     });
+    try {
+      await ref.read(authStateProvider.notifier).requestOtp(_phone.text.trim());
+      setState(() => _otpSent = true);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('OTP sent if your phone is registered'),
+          backgroundColor: JharanaiTokens.brand,
+        ),
+      );
+    } on ApiException catch (e) {
+      setState(() => _error = _messageFor(e));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Future<void> _verify() async {
     if (_otp.text.length < 4) {
-      _toast('Enter the OTP');
+      setState(() => _error = 'Enter the OTP');
       return;
     }
-    setState(() => _loading = true);
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(builder: (_) => const TodaysRouteScreen()),
-    );
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await ref.read(authStateProvider.notifier).verifyOtp(
+            phone: _phone.text.trim(),
+            code: _otp.text.trim(),
+          );
+      // Routing reacts to AuthSignedIn; nothing else to do.
+    } on ApiException catch (e) {
+      setState(() => _error = _messageFor(e));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  String _messageFor(ApiException e) {
+    switch (e.kind) {
+      case ApiErrorKind.unauthorized:
+        return 'Wrong or expired OTP. Try again.';
+      case ApiErrorKind.network:
+        return 'No internet. Check your connection.';
+      case ApiErrorKind.timeout:
+        return 'Server did not respond. Try again.';
+      case ApiErrorKind.validation:
+        return 'Please check what you entered.';
+      default:
+        return e.message;
+    }
   }
 
   @override
@@ -69,7 +107,6 @@ class _LoginScreenState extends State<LoginScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
-              // Logo block
               Center(
                 child: Container(
                   width: 64,
@@ -78,11 +115,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     color: JharanaiTokens.brand,
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: const Icon(
-                    Icons.water_drop_rounded,
-                    color: Colors.white,
-                    size: 32,
-                  ),
+                  child: const Icon(Icons.water_drop_rounded, color: Colors.white, size: 32),
                 ),
               ),
               const SizedBox(height: 16),
@@ -100,10 +133,7 @@ class _LoginScreenState extends State<LoginScreen> {
               const Center(
                 child: Text(
                   'Delivery partner',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: JharanaiTokens.textSecondary,
-                  ),
+                  style: TextStyle(fontSize: 14, color: JharanaiTokens.textSecondary),
                 ),
               ),
               const SizedBox(height: 48),
@@ -136,21 +166,30 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   textAlign: TextAlign.center,
                 ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: JharanaiTokens.dangerLight,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    _error!,
+                    style: const TextStyle(color: JharanaiTokens.dangerDark, fontSize: 13),
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
               SizedBox(
                 height: 52,
                 child: ElevatedButton(
-                  onPressed: _loading
-                      ? null
-                      : (_otpSent ? _verify : _requestOtp),
+                  onPressed: _loading ? null : (_otpSent ? _verify : _requestOtp),
                   child: _loading
                       ? const SizedBox(
                           width: 22,
                           height: 22,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                         )
                       : Text(_otpSent ? 'Verify and continue' : 'Get OTP'),
                 ),
@@ -159,7 +198,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 12),
                 Center(
                   child: TextButton(
-                    onPressed: () => setState(() => _otpSent = false),
+                    onPressed: () => setState(() {
+                      _otpSent = false;
+                      _otp.clear();
+                      _error = null;
+                    }),
                     child: const Text('Use a different number'),
                   ),
                 ),
@@ -168,10 +211,7 @@ class _LoginScreenState extends State<LoginScreen> {
               const Center(
                 child: Text(
                   'Internal app · For Jharanai sales executives only',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: JharanaiTokens.textMuted,
-                  ),
+                  style: TextStyle(fontSize: 11, color: JharanaiTokens.textMuted),
                 ),
               ),
               const SizedBox(height: 16),
@@ -185,14 +225,10 @@ class _LoginScreenState extends State<LoginScreen> {
   InputDecoration _inputDeco({String? prefix}) {
     return InputDecoration(
       prefixText: prefix == null ? null : '$prefix ',
-      prefixStyle: const TextStyle(
-        fontSize: 17,
-        color: JharanaiTokens.textSecondary,
-      ),
+      prefixStyle: const TextStyle(fontSize: 17, color: JharanaiTokens.textSecondary),
       filled: true,
       fillColor: JharanaiTokens.surface,
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(JharanaiTokens.radiusLg),
         borderSide: const BorderSide(color: JharanaiTokens.border),

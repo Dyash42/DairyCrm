@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/delivery_api.dart';
+import '../api/error.dart';
+import '../auth/auth_provider.dart';
 import '../models/delivery_stop.dart';
 import '../state/route_provider.dart';
+import '../sync/connectivity.dart';
+import '../sync/sync_engine.dart';
 import '../theme/tokens.dart';
 import '../widgets/confirm_delivery_sheet.dart';
 import '../widgets/offline_banner.dart';
 import '../widgets/route_complete_card.dart';
 import '../widgets/route_header.dart';
 import '../widgets/stop_card.dart';
+import 'end_of_day_screen.dart';
 import 'qr_scanner_screen.dart';
 
 class TodaysRouteScreen extends ConsumerStatefulWidget {
@@ -39,36 +45,96 @@ class _TodaysRouteScreenState extends ConsumerState<TodaysRouteScreen> {
     }).toList();
   }
 
-  Future<void> _openScanFor(DeliveryStop stop) async {
+  Future<void> _openScanFlow(DeliveryStop? preferredStop) async {
+    // Open camera scanner. On decode, resolve QR code → DeliveryStop +
+    // open confirm sheet.
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => QrScannerScreen(
-          onScanned: (_) {
-            _openConfirmSheet(stop);
+          onScanned: (rawCode) async {
+            // Resolve scanned code to a customer + matching stop. We pick
+            // the preferredStop if its customerCode matches; otherwise
+            // search the route for it; otherwise show a "not on this
+            // route" snackbar.
+            final summary = ref.read(routeSummaryProvider);
+            final code = rawCode.trim().toUpperCase();
+
+            DeliveryStop? match;
+            for (final s in summary.stops) {
+              if (s.customerCode.toUpperCase() == code) {
+                match = s;
+                break;
+              }
+            }
+
+            // If not on the route, try the by-code endpoint to confirm
+            // the QR is valid, then surface a clear error.
+            if (match == null) {
+              try {
+                await ref.read(deliveryApiProvider).lookupByCode(code);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('$code is not on today\'s route'),
+                      backgroundColor: JharanaiTokens.warningDark,
+                    ),
+                  );
+                }
+              } on ApiException {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Unknown QR: $code'),
+                      backgroundColor: JharanaiTokens.dangerDark,
+                    ),
+                  );
+                }
+              }
+              return;
+            }
+            if (!mounted) return;
+            _openConfirmSheet(match);
           },
         ),
       ),
     );
+    // Suppress unused
+    preferredStop;
   }
 
   void _openConfirmSheet(DeliveryStop stop) {
-    final notifier = ref.read(routeSummaryProvider.notifier);
+    final routeNotifier = ref.read(routeSnapshotProvider.notifier);
+    final sync = ref.read(syncEngineProvider.notifier);
     ConfirmDeliverySheet.show(
       context,
       stop: stop,
-      onDeliver: (qty) {
-        notifier.markDelivered(stop.id, qty);
+      onDeliver: (qty, cash) async {
+        await routeNotifier.markDelivered(stop.id, qty);
+        await sync.recordScan(
+          deliveryId: stop.id,
+          customerCode: stop.customerCode,
+          deliveredLitres: qty,
+          cashCollected: cash,
+          kind: qty < stop.scheduledLitres ? 'PARTIAL' : 'DELIVERED',
+        );
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              'Delivered ${_fmt(qty)} L to ${stop.customerName}',
-            ),
+            content: Text('Delivered ${_fmt(qty)} L to ${stop.customerName}'),
             backgroundColor: JharanaiTokens.successDark,
           ),
         );
       },
-      onSkip: () {
-        notifier.markSkipped(stop.id);
+      onSkip: () async {
+        await routeNotifier.markSkipped(stop.id);
+        await sync.recordScan(
+          deliveryId: stop.id,
+          customerCode: stop.customerCode,
+          deliveredLitres: 0,
+          note: 'Skipped',
+          kind: 'SKIPPED',
+        );
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Skipped ${stop.customerName}'),
@@ -85,8 +151,8 @@ class _TodaysRouteScreenState extends ConsumerState<TodaysRouteScreen> {
   @override
   Widget build(BuildContext context) {
     final summary = ref.watch(routeSummaryProvider);
-    final isOffline = ref.watch(isOfflineProvider);
-    final queued = ref.watch(queuedScanCountProvider);
+    final isOffline = ref.watch(isOfflineStreamProvider);
+    final queued = ref.watch(syncEngineProvider).queueDepth;
     final visibleStops = _filter(summary.stops);
 
     return Scaffold(
@@ -175,10 +241,9 @@ class _TodaysRouteScreenState extends ConsumerState<TodaysRouteScreen> {
                     RouteCompleteCard(
                       summary: summary,
                       onSubmitDayReport: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Day report submitted'),
-                            backgroundColor: JharanaiTokens.successDark,
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const EndOfDayScreen(),
                           ),
                         );
                       },
@@ -186,7 +251,7 @@ class _TodaysRouteScreenState extends ConsumerState<TodaysRouteScreen> {
                   ...visibleStops.map(
                     (stop) => StopCard(
                       stop: stop,
-                      onScanPressed: () => _openScanFor(stop),
+                      onScanPressed: () => _openScanFlow(stop),
                       onMorePressed: () {
                         if (stop.isPending) {
                           _openConfirmSheet(stop);
@@ -219,13 +284,7 @@ class _TodaysRouteScreenState extends ConsumerState<TodaysRouteScreen> {
               foregroundColor: Colors.white,
               icon: const Icon(Icons.qr_code_scanner_rounded),
               label: const Text('Scan QR'),
-              onPressed: () async {
-                final firstPending = summary.stops.firstWhere(
-                  (s) => s.isPending,
-                  orElse: () => summary.stops.first,
-                );
-                await _openScanFor(firstPending);
-              },
+              onPressed: () async => _openScanFlow(null),
             ),
     );
   }
@@ -268,15 +327,28 @@ class _DevDrawer extends ConsumerWidget {
                 ],
               ),
             ),
+            _modeTile(ref, mode, DemoMode.off,
+                'Live data · from backend', Icons.cloud_done_outlined),
             _modeTile(ref, mode, DemoMode.defaultMorning,
-                'Default morning · 0/10', Icons.wb_sunny_outlined),
+                'Demo: Default morning · 0/10', Icons.wb_sunny_outlined),
             _modeTile(ref, mode, DemoMode.midRoute,
-                'Mid-route · 6/10 (+1 partial, +1 skipped)',
+                'Demo: Mid-route · 6/10 (+1 partial, +1 skipped)',
                 Icons.timelapse_rounded),
             _modeTile(ref, mode, DemoMode.routeComplete,
-                'Route complete · 9/10', Icons.task_alt_rounded),
-            _modeTile(ref, mode, DemoMode.offline,
-                'Offline mode · banner + queue', Icons.cloud_off_rounded),
+                'Demo: Route complete · 9/10', Icons.task_alt_rounded),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.logout_rounded,
+                  color: JharanaiTokens.dangerDark),
+              title: const Text(
+                'Sign out',
+                style: TextStyle(color: JharanaiTokens.dangerDark),
+              ),
+              onTap: () {
+                Navigator.of(context).pop();
+                ref.read(authStateProvider.notifier).signOut();
+              },
+            ),
           ],
         ),
       ),

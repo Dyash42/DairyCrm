@@ -4,7 +4,8 @@ import '../models/delivery_stop.dart';
 import '../theme/tokens.dart';
 
 /// Bottom sheet shown after QR scan (or from the "more" tap).
-/// Lets the milkman: confirm scheduled qty, edit qty (partial), or skip.
+/// Lets the milkman: confirm scheduled qty, edit qty (partial), enter
+/// cash collected, or skip.
 class ConfirmDeliverySheet extends StatefulWidget {
   const ConfirmDeliverySheet({
     super.key,
@@ -14,13 +15,13 @@ class ConfirmDeliverySheet extends StatefulWidget {
   });
 
   final DeliveryStop stop;
-  final void Function(double deliveredLitres) onDeliver;
+  final void Function(double deliveredLitres, double? cashCollected) onDeliver;
   final VoidCallback onSkip;
 
   static Future<void> show(
     BuildContext context, {
     required DeliveryStop stop,
-    required void Function(double) onDeliver,
+    required void Function(double, double?) onDeliver,
     required VoidCallback onSkip,
   }) {
     return showModalBottomSheet<void>(
@@ -41,11 +42,18 @@ class ConfirmDeliverySheet extends StatefulWidget {
 
 class _ConfirmDeliverySheetState extends State<ConfirmDeliverySheet> {
   late double _qty;
+  final _cashCtl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _qty = widget.stop.scheduledLitres;
+  }
+
+  @override
+  void dispose() {
+    _cashCtl.dispose();
+    super.dispose();
   }
 
   void _adjust(double delta) {
@@ -193,13 +201,43 @@ class _ConfirmDeliverySheetState extends State<ConfirmDeliverySheet> {
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
+              // Cash collection — optional; some customers pay digitally
+              const Text(
+                'Cash collected (optional)',
+                style: TextStyle(
+                  color: JharanaiTokens.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.4,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _cashCtl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  prefixText: '₹ ',
+                  hintText: '0',
+                  filled: true,
+                  fillColor: JharanaiTokens.surfaceMuted,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(JharanaiTokens.radiusLg),
+                    borderSide: const BorderSide(color: JharanaiTokens.border),
+                  ),
+                ),
+                style: const TextStyle(fontSize: 17),
+              ),
+              const SizedBox(height: 20),
               SizedBox(
                 height: 52,
                 child: ElevatedButton.icon(
                   onPressed: () {
+                    final cashStr = _cashCtl.text.trim();
+                    final cash = cashStr.isEmpty ? null : double.tryParse(cashStr);
                     Navigator.of(context).pop();
-                    widget.onDeliver(_qty);
+                    widget.onDeliver(_qty, cash);
                   },
                   icon: const Icon(Icons.check_rounded),
                   label: const Text('Mark delivered'),

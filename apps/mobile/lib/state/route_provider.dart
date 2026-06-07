@@ -1,84 +1,202 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/client.dart';
+import '../api/delivery_api.dart';
+import '../api/error.dart';
+import '../auth/auth_provider.dart';
 import '../models/delivery_stop.dart';
 
-/// Demo modes — flip via the dev menu to render each state from the PDF.
-/// In production this is replaced by a real backend feed + local SQLite.
-enum DemoMode { defaultMorning, midRoute, routeComplete, offline }
+/// Source of the data the screen is currently rendering.
+enum RouteDataSource { loading, live, demo, error }
 
-final demoModeProvider = StateProvider<DemoMode>((ref) => DemoMode.defaultMorning);
+/// Demo modes — flip via the dev menu (debug builds) to render each
+/// design state. In production the screen always loads live data.
+enum DemoMode { off, defaultMorning, midRoute, routeComplete, offline }
 
-/// Whether the app is in offline mode (banner + queue counter).
-final isOfflineProvider = Provider<bool>((ref) {
-  return ref.watch(demoModeProvider) == DemoMode.offline;
+final demoModeProvider = StateProvider<DemoMode>((_) => DemoMode.off);
+
+/// Whether the app is offline (banner + queue counter).
+final isOfflineProvider = StateProvider<bool>((_) => false);
+final queuedScanCountProvider = StateProvider<int>((_) => 0);
+
+/// API instance — Riverpod so tests can override.
+final deliveryApiProvider = Provider<DeliveryApi>((ref) {
+  return DeliveryApi(ref.watch(apiClientProvider));
 });
 
-/// Mock queued-scan count shown in the offline banner.
-final queuedScanCountProvider = StateProvider<int>((ref) {
-  return ref.watch(demoModeProvider) == DemoMode.offline ? 3 : 0;
-});
+/// What the Today screen consumes. Holds both the summary and the
+/// data-source flag so the UI can render a "live" or "demo" pill.
+class RouteSnapshot {
+  RouteSnapshot({
+    required this.summary,
+    required this.source,
+    this.errorMessage,
+  });
+  final RouteSummary summary;
+  final RouteDataSource source;
+  final String? errorMessage;
 
-/// The route the milkman is on today.
-final routeSummaryProvider = StateNotifierProvider<RouteNotifier, RouteSummary>(
-  (ref) {
-    final mode = ref.watch(demoModeProvider);
-    return RouteNotifier(_buildForMode(mode));
-  },
+  RouteSnapshot copyWith({
+    RouteSummary? summary,
+    RouteDataSource? source,
+    String? errorMessage,
+  }) {
+    return RouteSnapshot(
+      summary: summary ?? this.summary,
+      source: source ?? this.source,
+      errorMessage: errorMessage,
+    );
+  }
+}
+
+/// Holds + refreshes the route. Subscribes to auth state so a fresh login
+/// triggers a reload, and exposes markDelivered/markSkipped for the UI.
+class RouteNotifier extends StateNotifier<RouteSnapshot> {
+  RouteNotifier(this._ref)
+      : super(RouteSnapshot(summary: _emptySummary(), source: RouteDataSource.loading)) {
+    _ref.listen<AuthState>(authStateProvider, (_, next) {
+      if (next is AuthSignedIn) {
+        refresh();
+      } else if (next is AuthSignedOut) {
+        state = RouteSnapshot(summary: _emptySummary(), source: RouteDataSource.loading);
+      }
+    });
+    _ref.listen<DemoMode>(demoModeProvider, (_, mode) {
+      if (mode != DemoMode.off) {
+        state = RouteSnapshot(summary: _demoSummary(mode), source: RouteDataSource.demo);
+      } else {
+        refresh();
+      }
+    });
+    // Kick off an initial load if we're already signed in.
+    final auth = _ref.read(authStateProvider);
+    if (auth is AuthSignedIn) refresh();
+  }
+
+  final Ref _ref;
+
+  /// Fetch today's route. On error keeps the previous data + flags
+  /// `source = error`. The UI shows a small banner; the data does not
+  /// vanish.
+  Future<void> refresh() async {
+    if (_ref.read(demoModeProvider) != DemoMode.off) return;
+    state = state.copyWith(source: RouteDataSource.loading);
+    try {
+      final api = _ref.read(deliveryApiProvider);
+      final res = await api.todaysRoute();
+      final summary = RouteSummary(
+        executiveName: _execName(),
+        dateLabel: _dateLabel(res.date),
+        routeLabel: res.routeId == null ? 'No route assigned' : 'Today',
+        stops: res.stops,
+      );
+      state = RouteSnapshot(summary: summary, source: RouteDataSource.live);
+    } on ApiException catch (e) {
+      // Keep whatever we had; flag error.
+      state = state.copyWith(source: RouteDataSource.error, errorMessage: e.message);
+    }
+  }
+
+  String _execName() {
+    final user = _ref.read(currentUserProvider);
+    return user?.name ?? 'Sales Executive';
+  }
+
+  String _dateLabel(String iso) {
+    if (iso.isEmpty) return '';
+    final d = DateTime.tryParse(iso);
+    if (d == null) return '';
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return '${days[d.weekday - 1]} ${d.day} ${months[d.month - 1]}';
+  }
+
+  /// Optimistic: flip state immediately, then push to server. On failure
+  /// the sync engine will retry; the UI banner reflects the queue.
+  Future<void> markDelivered(String stopId, double litres) async {
+    state = state.copyWith(
+      summary: _patchStop(state.summary, stopId, (s) {
+        final isPartial = litres < s.scheduledLitres;
+        return s.copyWith(
+          status: isPartial ? DeliveryStatus.partial : DeliveryStatus.delivered,
+          deliveredLitres: litres,
+          scannedAt: DateTime.now(),
+        );
+      }),
+    );
+    try {
+      await _ref.read(deliveryApiProvider).confirm(
+            deliveryId: stopId,
+            deliveredLitres: litres,
+          );
+    } on ApiException {
+      // Surface the error pill; the sync engine will re-attempt.
+      state = state.copyWith(
+        source: RouteDataSource.error,
+        errorMessage: 'Will sync when online',
+      );
+    }
+  }
+
+  Future<void> markSkipped(String stopId, {String? reason}) async {
+    state = state.copyWith(
+      summary: _patchStop(state.summary, stopId,
+          (s) => s.copyWith(status: DeliveryStatus.skipped)),
+    );
+    try {
+      await _ref.read(deliveryApiProvider).skip(deliveryId: stopId, reason: reason);
+    } on ApiException {
+      state = state.copyWith(
+        source: RouteDataSource.error,
+        errorMessage: 'Will sync when online',
+      );
+    }
+  }
+}
+
+final routeSnapshotProvider =
+    StateNotifierProvider<RouteNotifier, RouteSnapshot>((ref) => RouteNotifier(ref));
+
+/// Back-compat — older widgets watch `routeSummaryProvider` for the
+/// RouteSummary directly. We map the snapshot onto it.
+final routeSummaryProvider = Provider<RouteSummary>(
+  (ref) => ref.watch(routeSnapshotProvider).summary,
 );
 
-class RouteNotifier extends StateNotifier<RouteSummary> {
-  RouteNotifier(super.initial);
+// --------------------------- helpers ---------------------------
 
-  void markDelivered(String stopId, double deliveredLitres) {
-    final stops = state.stops.map((s) {
-      if (s.id != stopId) return s;
-      final isPartial = deliveredLitres < s.scheduledLitres;
-      return s.copyWith(
-        status:
-            isPartial ? DeliveryStatus.partial : DeliveryStatus.delivered,
-        deliveredLitres: deliveredLitres,
-        scannedAt: DateTime.now(),
-      );
-    }).toList();
-    state = RouteSummary(
-      executiveName: state.executiveName,
-      dateLabel: state.dateLabel,
-      routeLabel: state.routeLabel,
-      stops: stops,
-    );
-  }
-
-  void markSkipped(String stopId) {
-    final stops = state.stops.map((s) {
-      if (s.id != stopId) return s;
-      return s.copyWith(status: DeliveryStatus.skipped);
-    }).toList();
-    state = RouteSummary(
-      executiveName: state.executiveName,
-      dateLabel: state.dateLabel,
-      routeLabel: state.routeLabel,
-      stops: stops,
-    );
-  }
+RouteSummary _patchStop(
+  RouteSummary s,
+  String id,
+  DeliveryStop Function(DeliveryStop) f,
+) {
+  final stops = s.stops
+      .map((stop) => stop.id == id ? f(stop) : stop)
+      .toList(growable: false);
+  return RouteSummary(
+    executiveName: s.executiveName,
+    dateLabel: s.dateLabel,
+    routeLabel: s.routeLabel,
+    stops: stops,
+  );
 }
 
-RouteSummary _buildForMode(DemoMode mode) {
-  switch (mode) {
-    case DemoMode.defaultMorning:
-      return _defaultMorning();
-    case DemoMode.midRoute:
-    case DemoMode.offline:
-      return _midRoute();
-    case DemoMode.routeComplete:
-      return _routeComplete();
-  }
-}
+RouteSummary _emptySummary() => RouteSummary(
+      executiveName: '',
+      dateLabel: '',
+      routeLabel: '',
+      stops: const [],
+    );
 
-// ---------------- demo data — mirrors the design PDF exactly ----------------
+// --------------------------- demo mode ---------------------------
+// Kept for the design preview (Dev menu in debug builds).
 
-const _exec = 'Ramesh Sahu';
-const _date = 'Mon 2 Jun';
-const _routeLbl = 'Route 4 — Berhampur South';
+const _execDemo = 'Ramesh Sahu';
+const _dateDemo = 'Mon 2 Jun';
+const _routeDemo = 'Route 4 — Berhampur South';
 
 List<DeliveryStop> _baseStops() => [
       const DeliveryStop(
@@ -126,118 +244,40 @@ List<DeliveryStop> _baseStops() => [
         scheduledLitres: 2.0,
         sequence: 5,
       ),
-      const DeliveryStop(
-        id: 's6',
-        customerCode: 'JHR-100620',
-        customerName: 'Priyanka Behera',
-        houseNumber: 'Plot 3',
-        addressLine: 'Giri Market, Old Town',
-        scheduledLitres: 1.0,
-        sequence: 6,
-      ),
-      const DeliveryStop(
-        id: 's7',
-        customerCode: 'JHR-100118',
-        customerName: 'Susanta Nayak',
-        houseNumber: 'House 19',
-        addressLine: 'Engineering School Road',
-        scheduledLitres: 4.0,
-        sequence: 7,
-      ),
-      const DeliveryStop(
-        id: 's8',
-        customerCode: 'JHR-100455b',
-        customerName: 'Manoj Rout',
-        houseNumber: 'Flat 22',
-        addressLine: 'Komapalli, Sector 2',
-        scheduledLitres: 1.5,
-        sequence: 8,
-      ),
-      const DeliveryStop(
-        id: 's9',
-        customerCode: 'JHR-100712',
-        customerName: 'Gayatri Panda',
-        houseNumber: 'House 6',
-        addressLine: 'Hill Patna, Upper Lane',
-        scheduledLitres: 2.5,
-        sequence: 9,
-      ),
-      const DeliveryStop(
-        id: 's10',
-        customerCode: 'JHR-100089',
-        customerName: 'Debasish Sahu',
-        houseNumber: 'MIG-31',
-        addressLine: 'Ankuli, Main Road',
-        scheduledLitres: 1.0,
-        sequence: 10,
-      ),
     ];
 
-RouteSummary _defaultMorning() => RouteSummary(
-      executiveName: _exec,
-      dateLabel: _date,
-      routeLabel: _routeLbl,
-      stops: _baseStops(),
-    );
-
-RouteSummary _midRoute() {
+RouteSummary _demoSummary(DemoMode m) {
   final stops = _baseStops();
-  // 1-4 delivered, 3 was partial (2.0 of 3.0)
-  stops[0] = stops[0].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 2.0,
-  );
-  stops[1] = stops[1].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 1.0,
-  );
-  stops[2] = stops[2].copyWith(
-    status: DeliveryStatus.partial,
-    deliveredLitres: 2.0, // was 3.0
-  );
-  stops[3] = stops[3].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 1.5,
-  );
-  // 5 skipped (not home)
-  stops[4] = stops[4].copyWith(status: DeliveryStatus.skipped);
-  // 6, 7 delivered
-  stops[5] = stops[5].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 1.0,
-  );
-  stops[6] = stops[6].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 4.0,
-  );
-  // 8, 9, 10 still pending
+  switch (m) {
+    case DemoMode.midRoute:
+    case DemoMode.offline:
+      stops[0] = stops[0]
+          .copyWith(status: DeliveryStatus.delivered, deliveredLitres: 2.0);
+      stops[1] = stops[1]
+          .copyWith(status: DeliveryStatus.delivered, deliveredLitres: 1.0);
+      stops[2] = stops[2]
+          .copyWith(status: DeliveryStatus.partial, deliveredLitres: 2.0);
+      stops[3] = stops[3]
+          .copyWith(status: DeliveryStatus.delivered, deliveredLitres: 1.5);
+      stops[4] = stops[4].copyWith(status: DeliveryStatus.skipped);
+      break;
+    case DemoMode.routeComplete:
+      for (var i = 0; i < stops.length; i++) {
+        stops[i] = stops[i]
+            .copyWith(
+                status: DeliveryStatus.delivered,
+                deliveredLitres: stops[i].scheduledLitres);
+      }
+      stops[4] = stops[4].copyWith(status: DeliveryStatus.skipped);
+      break;
+    case DemoMode.defaultMorning:
+    case DemoMode.off:
+      break;
+  }
   return RouteSummary(
-    executiveName: _exec,
-    dateLabel: _date,
-    routeLabel: _routeLbl,
-    stops: stops,
-  );
-}
-
-RouteSummary _routeComplete() {
-  final stops = _midRoute().stops;
-  // Complete remaining ones
-  stops[7] = stops[7].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 1.5,
-  );
-  stops[8] = stops[8].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 2.5,
-  );
-  stops[9] = stops[9].copyWith(
-    status: DeliveryStatus.delivered,
-    deliveredLitres: 1.0,
-  );
-  return RouteSummary(
-    executiveName: _exec,
-    dateLabel: _date,
-    routeLabel: _routeLbl,
+    executiveName: _execDemo,
+    dateLabel: _dateDemo,
+    routeLabel: _routeDemo,
     stops: stops,
   );
 }

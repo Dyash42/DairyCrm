@@ -139,6 +139,115 @@ export function fetchCustomers(params: {
   );
 }
 
+export function fetchCustomerDetail(id: string) {
+  return apiFetch<CustomerPayload & {
+    route: { id: string; name: string } | null;
+    subscriptions: Array<{ id: string; sku: string; litresPerDay: string; ratePerLitre: string; startDate: string; endDate: string | null; status: string }>;
+    payments: Array<{ id: string; amount: string; mode: string; status: string; paidAt: string | null; createdAt: string }>;
+    pauses: Array<{ id: string; startDate: string; endDate: string; resumeDate: string; reason: string | null }>;
+  }>(`/customers/${id}/detail`);
+}
+
+export function fetchCustomerQr(id: string) {
+  return apiFetch<{ code: string; dataUrl: string }>(`/customers/${id}/qr`);
+}
+
+export function regenerateCustomerQr(id: string, reason?: string) {
+  return apiFetch<{ ok: true; qr: { id: string; version: number; url: string } }>(
+    `/customers/${id}/qr/regenerate`,
+    { method: 'POST', body: { reason } },
+  );
+}
+
+export function fetchCustomerByCode(code: string) {
+  return apiFetch<{
+    id: string;
+    code: string;
+    name: string;
+    addressLine1: string;
+    litresPerDay: string;
+    routeId: string | null;
+    status: string;
+  }>(`/customers/by-code/${encodeURIComponent(code)}`);
+}
+
+export function fetchExecutives() {
+  return apiFetch<{
+    executives: Array<{
+      id: string;
+      name: string;
+      phone: string;
+      email: string | null;
+      active: boolean;
+      routeId: string | null;
+      routeName: string | null;
+    }>;
+  }>('/executives');
+}
+
+export function fetchBroadcasts() {
+  return apiFetch<{
+    broadcasts: Array<{
+      id: string;
+      message: string;
+      target: 'ALL' | 'ROUTES' | 'CUSTOMERS';
+      status: 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'FAILED';
+      sentCount: number;
+      deliveredCount: number;
+      failedCount: number;
+      scheduledFor: string | null;
+      createdAt: string;
+      routes: Array<{ routeId: string; route: { name: string } }>;
+    }>;
+  }>('/broadcasts');
+}
+
+export function createBroadcast(input: {
+  message: string;
+  target: 'ALL' | 'ROUTES' | 'CUSTOMERS';
+  routeIds?: string[];
+  scheduledFor?: string;
+}) {
+  return apiFetch<{ id: string }>('/broadcasts', { method: 'POST', body: input });
+}
+
+export function sendBroadcast(id: string) {
+  return apiFetch<{ id: string; status: string }>(`/broadcasts/${id}/send`, { method: 'POST' });
+}
+
+export function fetchInvoices(period?: string) {
+  const q = period ? `?period=${period}` : '';
+  return apiFetch<{
+    period: string;
+    invoices: Array<{
+      id: string;
+      customerName: string;
+      customerCode: string;
+      routeName: string;
+      period: string;
+      litres: number;
+      amount: number;
+      paid: boolean;
+      paidVia: string | null;
+    }>;
+    totals: { billed: number; collected: number; outstanding: number };
+  }>(`/billing/invoices${q}`);
+}
+
+export function fetchSettings() {
+  return apiFetch<{
+    rates: Record<string, number>;
+    skus: Array<{ code: string; name: string; active: boolean }>;
+    deliveryWindow: { morningStart: string; morningEnd: string };
+  }>('/settings');
+}
+
+export function fetchHolidays() {
+  return apiFetch<{
+    holidays: Array<{ id: string; date: string; reason: string; scope: string }>;
+  }>('/settings/holidays');
+}
+
 // ----------------------- Shared payload shapes -----------------------
 // Loose shapes that mirror the backend Prisma rows — refine later.
 

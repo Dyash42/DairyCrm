@@ -4,7 +4,9 @@ import { Download, ChevronRight, Banknote, Smartphone, CreditCard } from 'lucide
 import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
 import { StatusPill } from '@/components/ui/StatusPill';
-import { invoices } from '@/lib/mock-data';
+import { invoices as mockInvoices } from '@/lib/mock-data';
+import { fetchInvoices } from '@/lib/api';
+import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { formatINR } from '@jharanai/shared';
 
 function PaidViaIcon({ via }: { via?: 'CASH' | 'UPI_STATIC' | 'UPI_ONLINE' }) {
@@ -24,6 +26,23 @@ const VIA_LABEL = {
 } as const;
 
 export default function BillingPage() {
+  const { data: invoices } = useApiWithFallback(
+    () => fetchInvoices(),
+    (raw) =>
+      raw.invoices.map((i) => ({
+        id: i.id,
+        customerName: i.customerName,
+        customerCode: i.customerCode,
+        routeName: i.routeName,
+        period: i.period,
+        litres: i.litres,
+        amount: i.amount,
+        paid: i.paid,
+        paidVia: (i.paidVia as 'CASH' | 'UPI_STATIC' | 'UPI_ONLINE' | null) ?? undefined,
+      })),
+    mockInvoices,
+  );
+
   const total = invoices.reduce((s, i) => s + i.amount, 0);
   const collected = invoices
     .filter((i) => i.paid)

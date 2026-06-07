@@ -13,10 +13,12 @@ import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import { StatusPill, type PillTone } from '@/components/ui/StatusPill';
 import {
-  broadcasts,
+  broadcasts as mockBroadcasts,
   routes,
   type BroadcastStatus,
 } from '@/lib/mock-data';
+import { fetchBroadcasts, createBroadcast, sendBroadcast } from '@/lib/api';
+import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { cn } from '@/lib/cn';
 
 const STATUS_TONE: Record<BroadcastStatus, PillTone> = {
@@ -32,10 +34,45 @@ type TargetMode = 'ALL' | 'ROUTES';
 export default function BroadcastsPage() {
   const [message, setMessage] = useState('');
   const [target, setTarget] = useState<TargetMode>('ROUTES');
-  const [selectedRoutes, setSelectedRoutes] = useState<string[]>([
-    'r1',
-    'r4',
-  ]);
+  const [selectedRoutes, setSelectedRoutes] = useState<string[]>(['r1', 'r4']);
+  const [submitting, setSubmitting] = useState(false);
+
+  const { data: broadcasts, reload } = useApiWithFallback(
+    fetchBroadcasts,
+    (raw) =>
+      raw.broadcasts.map((b) => ({
+        id: b.id,
+        message: b.message,
+        target: b.target,
+        routeIds: b.routes.map((r) => r.routeId),
+        sentAt: b.status === 'SENT' ? b.createdAt : undefined,
+        scheduledFor: b.scheduledFor ?? undefined,
+        status: b.status as BroadcastStatus,
+        sentCount: b.sentCount,
+        deliveredCount: b.deliveredCount,
+        failedCount: b.failedCount,
+      })),
+    mockBroadcasts,
+  );
+
+  async function onSendNow() {
+    if (!message.trim()) return;
+    setSubmitting(true);
+    try {
+      const created = await createBroadcast({
+        message,
+        target: target === 'ROUTES' ? 'ROUTES' : 'ALL',
+        routeIds: target === 'ROUTES' ? selectedRoutes : undefined,
+      });
+      await sendBroadcast(created.id);
+      setMessage('');
+      reload();
+    } catch {
+      // surfaced via the error pill in the live banner (TODO)
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   const recipientCount = useMemo(() => {
     if (target === 'ALL') {
@@ -175,11 +212,12 @@ export default function BroadcastsPage() {
                   Schedule
                 </button>
                 <button
-                  disabled={!message.trim() || recipientCount === 0}
+                  disabled={!message.trim() || recipientCount === 0 || submitting}
+                  onClick={onSendNow}
                   className="btn-primary disabled:cursor-not-allowed"
                 >
                   <Send size={16} />
-                  Send now
+                  {submitting ? 'Sending…' : 'Send now'}
                 </button>
               </div>
             </div>

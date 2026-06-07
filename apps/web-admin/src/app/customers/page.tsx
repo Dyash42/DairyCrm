@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Search, Download, ChevronRight } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
 import { SegmentedTabs } from '@/components/ui/Tabs';
@@ -36,6 +37,7 @@ const LABEL: Record<CustomerStatus, string> = {
 };
 
 export default function CustomersPage() {
+  const router = useRouter();
   const [filter, setFilter] = useState<Filter>('ALL');
   const [query, setQuery] = useState('');
 
@@ -131,7 +133,10 @@ export default function CustomersPage() {
             </thead>
             <tbody>
               {rows.map((c) => (
-                <tr key={c.id} className="cursor-pointer">
+                <tr
+                  key={c.id}
+                  onClick={() => router.push(`/customers/${c.id}`)}
+                  className="cursor-pointer">
                   <td>
                     <div className="flex items-center gap-3">
                       <Avatar initials={getInitials(c.name)} />

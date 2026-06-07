@@ -11,9 +11,11 @@
 
 import { loadConfig } from './config';
 import { buildServer } from './server';
+import { initObservability } from './observability';
 
 async function main() {
   const config = loadConfig();
+  await initObservability();
   const app = await buildServer();
 
   try {

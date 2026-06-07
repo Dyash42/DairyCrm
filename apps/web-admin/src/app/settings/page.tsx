@@ -4,8 +4,39 @@ import { Save } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import { StatusPill } from '@/components/ui/StatusPill';
+import { fetchSettings, fetchHolidays } from '@/lib/api';
+import { useApiWithFallback } from '@/hooks/useApiWithFallback';
+
+const FALLBACK_SETTINGS = {
+  rates: { COW_MILK: 64, BUFFALO_MILK: 78, A2_MILK: 110 },
+  skus: [
+    { code: 'COW_MILK', name: 'Cow milk', active: true },
+    { code: 'BUFFALO_MILK', name: 'Buffalo milk', active: true },
+    { code: 'A2_MILK', name: 'A2 milk', active: false },
+    { code: 'CURD_500', name: 'Curd 500g', active: true },
+    { code: 'GHEE_200', name: 'Ghee 200ml', active: false },
+  ],
+  deliveryWindow: { morningStart: '05:30', morningEnd: '08:30' },
+};
+
+const FALLBACK_HOLIDAYS = [
+  { id: 'h1', date: '2026-05-28', reason: 'Buddha Purnima', scope: 'ALL' },
+  { id: 'h2', date: '2026-08-14', reason: 'Janmashtami', scope: 'ALL' },
+  { id: 'h3', date: '2026-10-02', reason: 'Gandhi Jayanti', scope: 'ALL' },
+];
 
 export default function SettingsPage() {
+  const { data: settings } = useApiWithFallback(
+    fetchSettings,
+    (raw) => raw,
+    FALLBACK_SETTINGS,
+  );
+  const { data: holidays } = useApiWithFallback(
+    fetchHolidays,
+    (raw) => raw.holidays,
+    FALLBACK_HOLIDAYS,
+  );
+
   return (
     <>
       <Topbar
@@ -27,21 +58,14 @@ export default function SettingsPage() {
             }
           />
           <CardBody className="space-y-4">
-            <Field
-              label="Cow milk (₹ per litre)"
-              defaultValue="64"
-              suffix="₹/L"
-            />
-            <Field
-              label="Buffalo milk (₹ per litre)"
-              defaultValue="78"
-              suffix="₹/L"
-            />
-            <Field
-              label="A2 milk (₹ per litre)"
-              defaultValue="110"
-              suffix="₹/L"
-            />
+            {Object.entries(settings.rates).map(([sku, rate]) => (
+              <Field
+                key={sku}
+                label={`${humanSku(sku)} (₹ per litre)`}
+                defaultValue={String(rate)}
+                suffix="₹/L"
+              />
+            ))}
           </CardBody>
         </Card>
 
@@ -53,11 +77,14 @@ export default function SettingsPage() {
           />
           <CardBody>
             <ul className="divide-y divide-divider">
-              <SkuRow name="Cow milk" code="COW_MILK" active />
-              <SkuRow name="Buffalo milk" code="BUFFALO_MILK" active />
-              <SkuRow name="A2 milk" code="A2_MILK" active={false} />
-              <SkuRow name="Curd 500g" code="CURD_500" active />
-              <SkuRow name="Ghee 200ml" code="GHEE_200" active={false} />
+              {settings.skus.map((sku) => (
+                <SkuRow
+                  key={sku.code}
+                  name={sku.name}
+                  code={sku.code}
+                  active={sku.active}
+                />
+              ))}
             </ul>
           </CardBody>
         </Card>
@@ -69,9 +96,17 @@ export default function SettingsPage() {
             subtitle="No deliveries on these days · subscriptions auto-skip"
           />
           <CardBody className="space-y-3">
-            <HolidayRow date="28 May 2026" reason="Buddha Purnima" />
-            <HolidayRow date="14 Aug 2026" reason="Janmashtami" />
-            <HolidayRow date="2 Oct 2026" reason="Gandhi Jayanti" />
+            {holidays.map((h) => (
+              <HolidayRow
+                key={h.id}
+                date={new Date(h.date).toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })}
+                reason={h.reason}
+              />
+            ))}
             <button className="text-sm text-brand font-medium hover:text-brand-600">
               + Add holiday
             </button>
@@ -85,13 +120,29 @@ export default function SettingsPage() {
             subtitle="When milkmen are out on routes"
           />
           <CardBody className="grid grid-cols-2 gap-4">
-            <Field label="Morning start" defaultValue="05:30" suffix="AM" />
-            <Field label="Morning end" defaultValue="08:30" suffix="AM" />
+            <Field
+              label="Morning start"
+              defaultValue={settings.deliveryWindow.morningStart}
+              suffix="AM"
+            />
+            <Field
+              label="Morning end"
+              defaultValue={settings.deliveryWindow.morningEnd}
+              suffix="AM"
+            />
           </CardBody>
         </Card>
       </div>
     </>
   );
+}
+
+function humanSku(code: string): string {
+  return code
+    .toLowerCase()
+    .split('_')
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(' ');
 }
 
 function Field({

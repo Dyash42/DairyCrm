@@ -108,6 +108,22 @@ export interface BotRepos {
     note: string;
     creditApplied?: number;
   }): Promise<void>;
+  /**
+   * Read the customer's currently active subscription, if any.
+   * Used by renew/resume flows so they don't quote stale or hard-coded values.
+   */
+  getActiveSubscription(customerId: string): Promise<{
+    id: string;
+    litresPerDay: number;
+    ratePerLitre: number;
+    daysOfWeek: number[];
+    endDate: Date | null;
+  } | null>;
+  /** Read the customer's open pause (if currently paused). */
+  getActivePause(customerId: string): Promise<{
+    startDate: Date;
+    endDate: Date;
+  } | null>;
 }
 
 /** Top-level entry: process one inbound message → return outbound actions. */

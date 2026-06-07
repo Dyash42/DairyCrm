@@ -37,6 +37,38 @@ const FLOWS: FlowHandler[] = [
   menuFlow, // catch-all for new conversations
 ];
 
+/**
+ * Idempotency cache: Meta retries webhooks aggressively. If the same
+ * messageId hits us twice (because we 200'd slowly or Meta got confused),
+ * we MUST NOT run flows twice — that would charge the customer twice or
+ * advance their FSM state to a place they didn't intend.
+ *
+ * Production: swap for Redis SET with TTL. For now: bounded in-memory set,
+ * survives within the process.
+ */
+const PROCESSED_IDS_TTL_MS = 10 * 60 * 1000; // 10 minutes is plenty for Meta retries
+const PROCESSED_IDS_MAX = 5_000;
+const processedIds = new Map<string, number>(); // messageId -> expiresAt
+
+function alreadyProcessed(messageId: string): boolean {
+  // Lazy GC of expired entries when we hit the cap.
+  if (processedIds.size > PROCESSED_IDS_MAX) {
+    const now = Date.now();
+    for (const [k, exp] of processedIds) {
+      if (exp < now) processedIds.delete(k);
+    }
+  }
+  const exp = processedIds.get(messageId);
+  if (exp && exp > Date.now()) return true;
+  processedIds.set(messageId, Date.now() + PROCESSED_IDS_TTL_MS);
+  return false;
+}
+
+/** Exposed for tests so they can reset state between cases. */
+export function _resetIdempotencyForTests(): void {
+  processedIds.clear();
+}
+
 export class ConversationEngine {
   constructor(
     private readonly repos: BotRepos = stubRepos,
@@ -44,6 +76,11 @@ export class ConversationEngine {
   ) {}
 
   async process(message: InboundMessage): Promise<void> {
+    // Idempotency — drop duplicates from Meta retries.
+    if (alreadyProcessed(message.messageId)) {
+      return;
+    }
+
     const state = (await sessionStore.get(message.from)) ?? freshState(message.from);
 
     const outbox: OutboundAction[] = [];

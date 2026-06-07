@@ -30,6 +30,8 @@ import { registerBroadcastRoutes } from './modules/broadcasts';
 import { registerDashboardRoutes } from './modules/dashboard';
 import { registerWhatsAppRoutes } from './modules/whatsapp';
 import { registerHealthRoutes } from './modules/health';
+import { registerBillingRoutes } from './modules/billing';
+import { registerSettingsRoutes } from './modules/settings';
 
 export interface BuildOptions {
   /** Skip rate limit in tests (it pollutes 200 fast-fire requests). */
@@ -96,6 +98,8 @@ export async function buildServer(opts: BuildOptions = {}): Promise<App> {
   await app.register(registerBroadcastRoutes, { prefix: '/broadcasts' });
   await app.register(registerDashboardRoutes, { prefix: '/dashboard' });
   await app.register(registerWhatsAppRoutes, { prefix: '/whatsapp' });
+  await app.register(registerBillingRoutes, { prefix: '/billing' });
+  await app.register(registerSettingsRoutes, { prefix: '/settings' });
 
   return app;
 }

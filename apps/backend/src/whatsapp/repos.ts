@@ -139,6 +139,35 @@ export const prismaBotRepos: BotRepos = {
     });
   },
 
+  async getActiveSubscription(customerId) {
+    const sub = await prisma.subscription.findFirst({
+      where: { customerId, status: SubscriptionStatus.ACTIVE },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!sub) return null;
+    return {
+      id: sub.id,
+      litresPerDay: Number(sub.litresPerDay),
+      ratePerLitre: Number(sub.ratePerLitre),
+      daysOfWeek: sub.daysOfWeek,
+      endDate: sub.endDate,
+    };
+  },
+
+  async getActivePause(customerId) {
+    const today = new Date();
+    const pause = await prisma.pauseRecord.findFirst({
+      where: {
+        customerId,
+        startDate: { lte: today },
+        endDate: { gte: today },
+      },
+      orderBy: { startDate: 'desc' },
+    });
+    if (!pause) return null;
+    return { startDate: pause.startDate, endDate: pause.endDate };
+  },
+
   async logSupportTicket(input) {
     // Until we have a SupportTicket table, log to WhatsAppLog as an audit trail.
     await prisma.whatsAppLog.create({

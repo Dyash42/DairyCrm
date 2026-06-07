@@ -1,8 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ConversationEngine } from './engine';
+import { ConversationEngine, _resetIdempotencyForTests } from './engine';
 import { InMemorySessionStore, sessionStore } from './session-store';
 import { WhatsAppSender } from './sender';
 import type { BotRepos, InboundMessage, OutboundAction } from './types';
+
+let testMessageIdCounter = 0;
+function uniqueMessageId(): string {
+  testMessageIdCounter += 1;
+  return `m-test-${testMessageIdCounter}-${Math.floor(Math.random() * 1e9)}`;
+}
 
 /**
  * These tests treat the engine as a black box: feed inbound messages,
@@ -13,15 +19,15 @@ import type { BotRepos, InboundMessage, OutboundAction } from './types';
  */
 
 function makeText(from: string, text: string): InboundMessage {
-  return { kind: 'text', from, text, messageId: `m-${Date.now()}`, timestamp: Date.now() };
+  return { kind: 'text', from, text, messageId: uniqueMessageId(), timestamp: Date.now() };
 }
 
 function makeButton(from: string, payload: string, title = payload): InboundMessage {
-  return { kind: 'button', from, payload, title, messageId: `m-${Date.now()}`, timestamp: Date.now() };
+  return { kind: 'button', from, payload, title, messageId: uniqueMessageId(), timestamp: Date.now() };
 }
 
 function makeList(from: string, rowId: string, title = rowId): InboundMessage {
-  return { kind: 'list', from, rowId, title, messageId: `m-${Date.now()}`, timestamp: Date.now() };
+  return { kind: 'list', from, rowId, title, messageId: uniqueMessageId(), timestamp: Date.now() };
 }
 
 /** A sender that captures all actions instead of POSTing to Meta. */
@@ -60,6 +66,12 @@ function makeRepos(knownCustomer?: { id: string; name: string; code: string }): 
     async pauseSubscription() {},
     async resumeSubscription() {},
     async logSupportTicket() {},
+    async getActiveSubscription() {
+      return null;
+    },
+    async getActivePause() {
+      return null;
+    },
   };
 }
 
@@ -72,6 +84,7 @@ describe('ConversationEngine — routing', () => {
     // We do this by clearing any prior state for our test phone numbers.
     store = sessionStore as unknown as InMemorySessionStore;
     sender = new CapturingSender();
+    _resetIdempotencyForTests();
   });
 
   it('a NEW number saying "Hi" → kicks off onboarding (welcome template)', async () => {

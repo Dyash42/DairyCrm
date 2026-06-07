@@ -105,6 +105,7 @@ model Customer {
   deliveries       Delivery[]
   whatsappLogs     WhatsAppLog[]
   renewalReminders RenewalReminder[]
+  qrCodes          QrCode[]
 
   @@index([routeId, status])
   @@index([phone])
@@ -221,6 +222,34 @@ model CustomerCodeCounter {
   key       String   @id // 'customer' for now; future: 'invoice', etc.
   lastValue Int      @default(100454) // first issued code will be 100455
   updatedAt DateTime @updatedAt
+}
+
+/// Audit history of QR codes issued to a customer.
+/// Lets admin revoke + regenerate when a QR is lost or misused; old rows
+/// stay around forever so we can trace a scan back to the issued code.
+enum QrCodeStatus {
+  ACTIVE
+  REVOKED
+}
+
+model QrCode {
+  id          String       @id @default(cuid())
+  customerId  String
+  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  /// The encoded payload — usually the customer code (JHR-XXXXXX). The same
+  /// customer can have multiple rows over time (revoke + regenerate).
+  payload     String
+  /// Where the rendered PNG lives (data URL in dev, S3/R2 URL in prod).
+  url         String
+  status      QrCodeStatus @default(ACTIVE)
+  version     Int          @default(1)
+  generatedAt DateTime     @default(now())
+  revokedAt   DateTime?
+  revokedBy   String? // user id of admin who revoked
+  reason      String? // why revoked (lost / abused / etc.)
+
+  @@index([customerId, status])
+  @@index([payload])
 }
 
 /// No-delivery days. The scheduling engine filters scheduledFor against this.

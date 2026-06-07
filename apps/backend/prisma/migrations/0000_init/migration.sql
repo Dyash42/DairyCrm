@@ -14,6 +14,9 @@ CREATE TYPE "AutoResumeStatus" AS ENUM ('PENDING', 'REMINDED', 'RESUMED', 'FAILE
 CREATE TYPE "RenewalReminderStatus" AS ENUM ('PENDING', 'SENT', 'RENEWED', 'EXPIRED', 'CANCELLED');
 
 -- CreateEnum
+CREATE TYPE "QrCodeStatus" AS ENUM ('ACTIVE', 'REVOKED');
+
+-- CreateEnum
 CREATE TYPE "PaymentMode" AS ENUM ('CASH', 'UPI_STATIC', 'UPI_ONLINE', 'CARD', 'OTHER');
 
 -- CreateEnum
@@ -169,6 +172,22 @@ CREATE TABLE "CustomerCodeCounter" (
 );
 
 -- CreateTable
+CREATE TABLE "QrCode" (
+    "id" TEXT NOT NULL,
+    "customerId" TEXT NOT NULL,
+    "payload" TEXT NOT NULL,
+    "url" TEXT NOT NULL,
+    "status" "QrCodeStatus" NOT NULL DEFAULT 'ACTIVE',
+    "version" INTEGER NOT NULL DEFAULT 1,
+    "generatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "revokedAt" TIMESTAMP(3),
+    "revokedBy" TEXT,
+    "reason" TEXT,
+
+    CONSTRAINT "QrCode_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "HolidayCalendar" (
     "id" TEXT NOT NULL,
     "date" DATE NOT NULL,
@@ -306,6 +325,12 @@ CREATE INDEX "RenewalReminder_status_dueDate_idx" ON "RenewalReminder"("status",
 CREATE INDEX "RenewalReminder_customerId_idx" ON "RenewalReminder"("customerId");
 
 -- CreateIndex
+CREATE INDEX "QrCode_customerId_status_idx" ON "QrCode"("customerId", "status");
+
+-- CreateIndex
+CREATE INDEX "QrCode_payload_idx" ON "QrCode"("payload");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "HolidayCalendar_date_key" ON "HolidayCalendar"("date");
 
 -- CreateIndex
@@ -358,6 +383,9 @@ ALTER TABLE "RenewalReminder" ADD CONSTRAINT "RenewalReminder_subscriptionId_fke
 
 -- AddForeignKey
 ALTER TABLE "RenewalReminder" ADD CONSTRAINT "RenewalReminder_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "QrCode" ADD CONSTRAINT "QrCode_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Payment" ADD CONSTRAINT "Payment_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;

@@ -5,14 +5,46 @@ import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
 import { StatusPill } from '@/components/ui/StatusPill';
 import { Avatar } from '@/components/ui/Avatar';
-import { executives, routes, getInitials } from '@/lib/mock-data';
+import { executives as mockExecs, routes, getInitials } from '@/lib/mock-data';
+import { fetchExecutives } from '@/lib/api';
+import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 
-function routeOf(id?: string) {
+interface ExecRow {
+  id: string;
+  name: string;
+  phone: string;
+  active: boolean;
+  routeId: string | null | undefined;
+  routeName: string;
+}
+
+function routeOf(id?: string | null) {
   if (!id) return '—';
   return routes.find((r) => r.id === id)?.name ?? '—';
 }
 
 export default function ExecutivesPage() {
+  const { data: executives } = useApiWithFallback(
+    fetchExecutives,
+    (raw): ExecRow[] =>
+      raw.executives.map((e) => ({
+        id: e.id,
+        name: e.name,
+        phone: e.phone,
+        active: e.active,
+        routeId: e.routeId,
+        routeName: e.routeName ?? routeOf(e.routeId),
+      })),
+    mockExecs.map((e) => ({
+      id: e.id,
+      name: e.name,
+      phone: e.phone,
+      active: e.active,
+      routeId: e.routeId ?? null,
+      routeName: routeOf(e.routeId),
+    })),
+  );
+
   const totalAssigned = executives.filter((e) => e.routeId).length;
 
   return (
@@ -70,7 +102,7 @@ export default function ExecutivesPage() {
                     </div>
                   </td>
                   <td>
-                    <span className="text-text-primary">{routeOf(e.routeId)}</span>
+                    <span className="text-text-primary">{e.routeName}</span>
                   </td>
                   <td>
                     <StatusPill tone={e.active ? 'success' : 'muted'}>

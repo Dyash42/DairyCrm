@@ -9,8 +9,10 @@
 
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
-
-const RATE_PER_LITRE = 64;
+import {
+  DEFAULT_RATE_PER_LITRE_INR,
+  DEFAULT_SUBSCRIPTION_DAYS,
+} from '../../constants';
 
 interface RenewCtx {
   litresPerDay?: number;
@@ -35,13 +37,21 @@ export const renewFlow: FlowHandler = {
     const phone = ctx.message.from;
 
     if (ctx.state.flow === 'menu') {
-      // Just entered renew. Start asking for days.
-      ctx.patchState({ flow: 'renew', step: 'ask_days', context: {} });
+      // Pull real subscription so we don't quote stale or hard-coded litres.
+      const sub = ctx.state.customerId
+        ? await ctx.repos.getActiveSubscription(ctx.state.customerId)
+        : null;
+      const litres = sub?.litresPerDay ?? 1;
+      ctx.patchState({
+        flow: 'renew',
+        step: 'ask_days',
+        context: { litresPerDay: litres } as Record<string, unknown>,
+      });
       ctx.send({
         kind: 'template',
         to: phone,
         templateName: TEMPLATES.renew_ask_days.name,
-        variables: { litres_per_day: '1' /* TODO: pull real value from repo */ },
+        variables: { litres_per_day: String(litres) },
       });
       return;
     }
@@ -54,10 +64,15 @@ export const renewFlow: FlowHandler = {
     switch (ctx.state.step) {
       case 'ask_days': {
         const dow = parseDaysOfWeek(text);
-        const litres = 1; // TODO: pull from current subscription
-        const duration = 30; // default to 30-day cycle
+        // Prefer real subscription data over slot defaults
+        const sub = ctx.state.customerId
+          ? await ctx.repos.getActiveSubscription(ctx.state.customerId)
+          : null;
+        const litres = sub?.litresPerDay ?? slot.litresPerDay ?? 1;
+        const rate = sub?.ratePerLitre ?? DEFAULT_RATE_PER_LITRE_INR;
+        const duration = DEFAULT_SUBSCRIPTION_DAYS;
         const deliveries = countDeliveries(dow, duration);
-        const total = Math.round(deliveries * litres * RATE_PER_LITRE);
+        const total = Math.round(deliveries * litres * rate);
 
         ctx.patchState({
           step: 'await_payment',
@@ -73,7 +88,7 @@ export const renewFlow: FlowHandler = {
             duration_days: String(duration),
             delivery_count: String(deliveries),
             litres_per_day: String(litres),
-            rate: String(RATE_PER_LITRE),
+            rate: String(rate),
             total: String(total),
           },
         });

@@ -5,8 +5,7 @@
 
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
-
-const CREDIT_PER_LITRE = 64;
+import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
 
 interface SupportCtx {
   kind?: 'missed' | 'other';
@@ -70,8 +69,13 @@ export const supportFlow: FlowHandler = {
       }
 
       case 'await_date': {
-        // Credit one day's worth (assume 1L for stub).
-        const credit = 1 * CREDIT_PER_LITRE;
+        // Credit one day's worth, using the customer's real rate when available.
+        const sub = ctx.state.customerId
+          ? await ctx.repos.getActiveSubscription(ctx.state.customerId)
+          : null;
+        const litres = sub?.litresPerDay ?? 1;
+        const rate = sub?.ratePerLitre ?? DEFAULT_RATE_PER_LITRE_INR;
+        const credit = Math.round(litres * rate);
         if (ctx.state.customerId) {
           await ctx.repos.logSupportTicket({
             customerId: ctx.state.customerId,

@@ -16,6 +16,10 @@ function signBody(body: string, secret = APP_SECRET): string {
 let app: FastifyInstance;
 
 beforeAll(async () => {
+  // Explicitly delete MESSAGING_PROVIDER in case the developer has a
+  // local .env file with MESSAGING_PROVIDER=stub for the demo flow —
+  // we want the provider factory to AUTO-detect Meta from META_* creds.
+  delete process.env.MESSAGING_PROVIDER;
   process.env.META_APP_SECRET = APP_SECRET;
   process.env.META_VERIFY_TOKEN = VERIFY_TOKEN;
   // Force Meta provider so signature verification is strict.
@@ -25,6 +29,12 @@ beforeAll(async () => {
   _resetConfigForTests();
   _resetMessagingProviderForTests();
   app = Fastify();
+  // Stub auth decorators required by the /test sub-router (admin bot
+  // tester). This webhook test only exercises /webhook so the stubs
+  // never actually run — but Fastify resolves the decorator at
+  // registration time, hence the stubs must exist.
+  app.decorate('authenticate', async () => {});
+  app.decorate('requireRole', () => async () => {});
   await app.register(registerWhatsAppRoutes, { prefix: '/whatsapp' });
   await app.ready();
 });

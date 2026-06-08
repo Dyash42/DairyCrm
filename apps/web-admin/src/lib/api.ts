@@ -534,6 +534,67 @@ export function bulkTemplateUrl(): string {
   return `${API_BASE}/customers/bulk/template`;
 }
 
+// ----------------------- WhatsApp bot tester -----------------------
+/**
+ * The shapes here mirror the backend's `OutboundAction` discriminated
+ * union (apps/backend/src/whatsapp/types.ts). The admin chat UI uses
+ * `kind` to pick how to render each bot reply.
+ */
+export type BotOutbound =
+  | { kind: 'text'; to: string; body: string }
+  | {
+      kind: 'template';
+      to: string;
+      templateName: string;
+      variables?: Record<string, string>;
+      mediaUrl?: string;
+    }
+  | {
+      kind: 'buttons';
+      to: string;
+      body: string;
+      buttons: Array<{ id: string; title: string }>;
+    }
+  | {
+      kind: 'list';
+      to: string;
+      body: string;
+      buttonText: string;
+      sections: Array<{
+        title: string;
+        rows: Array<{ id: string; title: string; description?: string }>;
+      }>;
+    }
+  | { kind: 'image'; to: string; mediaUrl: string; caption?: string };
+
+export interface BotSendResult {
+  outbound: BotOutbound[];
+  state: {
+    flow: string | null;
+    step: string | null;
+    customerId: string | null;
+  } | null;
+}
+
+export function botSend(
+  body:
+    | { kind: 'text'; from: string; text: string }
+    | { kind: 'button'; from: string; payload: string; title: string }
+    | { kind: 'list'; from: string; rowId: string; title: string },
+) {
+  return apiFetch<BotSendResult>('/whatsapp/test/send', {
+    method: 'POST',
+    body,
+  });
+}
+
+export function botReset(from: string) {
+  return apiFetch<{ ok: true; from: string }>('/whatsapp/test/reset', {
+    method: 'POST',
+    body: { from },
+  });
+}
+
 /** Download all customers as a CSV — opens in browser with token in URL.
  *  Since the endpoint is authed, we fetch then make an object URL. */
 export async function downloadCustomersCsv(filename = 'customers.csv'): Promise<void> {

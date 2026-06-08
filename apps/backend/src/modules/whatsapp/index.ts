@@ -13,8 +13,15 @@ import type { App } from '../../types';
 
 import { getMessagingProvider } from '../../providers/messaging';
 import { verifyWebhook } from '../../whatsapp/webhook';
+import { registerWhatsAppTestRoutes } from './test';
 
 export async function registerWhatsAppRoutes(app: App) {
+  // Admin bot-tester sub-router. Mounted under /test (so full path is
+  // /whatsapp/test/send + /whatsapp/test/reset). This is the chat-style
+  // playground for /whatsapp routes when running on the stub provider.
+  await app.register(registerWhatsAppTestRoutes, { prefix: '/test' });
+
+
   // GET — Meta verification challenge
   app.route({
     method: 'GET',
@@ -54,7 +61,8 @@ export async function registerWhatsAppRoutes(app: App) {
     handler: async (req, reply) => {
       const rawBody = req.rawBody ?? '';
       const signature = req.headers['x-hub-signature-256'] as string | undefined;
-      if (!getMessagingProvider().verifyWebhookSignature(rawBody, signature)) {
+      const provider = getMessagingProvider();
+      if (!provider.verifyWebhookSignature(rawBody, signature)) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
       const event = req.body as Parameters<

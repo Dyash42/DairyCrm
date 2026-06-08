@@ -13,6 +13,7 @@ import {
   LogOut,
   Megaphone,
   Package,
+  MessageSquare,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -35,6 +36,7 @@ const MANAGE: NavItem[] = [
   { href: '/products', label: 'Products', icon: Package },
   { href: '/broadcasts', label: 'Broadcasts', icon: Megaphone },
   { href: '/billing', label: 'Billing', icon: Receipt },
+  { href: '/bot-test', label: 'Bot tester', icon: MessageSquare },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 

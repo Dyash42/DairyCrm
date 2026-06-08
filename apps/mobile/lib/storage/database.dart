@@ -41,8 +41,9 @@ class QueuedScans extends Table {
   DateTimeColumn get updatedAt =>
       dateTime().clientDefault(() => DateTime.now())();
 
-  @override
-  Set<Column> get primaryKey => {id};
+  // No explicit primaryKey override — Drift treats autoIncrement() as the
+  // primary key automatically, and declaring both is a "can't override
+  // primaryKey and use autoIncrement" error from drift_dev.
 }
 
 @DriftDatabase(tables: [QueuedScans])

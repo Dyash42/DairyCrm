@@ -42,8 +42,13 @@ This gives you a real end-to-end demo: login, create customer, record
 payment, view dashboard with real numbers. Payment gateway and
 WhatsApp stay on stub providers (no creds needed).
 
+> **Shell note:** the bash blocks below use `&&` and `\` line continuations.
+> **On Windows PowerShell**, `&&` is a parse error (PS 5.1) and `\` does
+> nothing. PowerShell-native variants are shown right after each block.
+
 ### 1. Start Postgres in Docker
 
+**bash / git-bash / WSL:**
 ```bash
 docker run -d \
   --name jharanai-postgres \
@@ -53,15 +58,21 @@ docker run -d \
   postgres:16
 ```
 
+**Windows PowerShell** (one line, no backslashes):
+```powershell
+docker run -d --name jharanai-postgres -e POSTGRES_PASSWORD=jharanai -e POSTGRES_DB=jharanai -p 5432:5432 postgres:16
+```
+
 Verify it's up:
 ```bash
-docker ps | grep jharanai-postgres
+docker ps
 ```
 
 ### 2. Set the backend env
 
 Create `apps/backend/.env`:
 
+**bash:**
 ```bash
 cat > apps/backend/.env <<'EOF'
 NODE_ENV=development
@@ -84,14 +95,40 @@ BUSINESS_TZ=Asia/Kolkata
 EOF
 ```
 
+**Windows PowerShell** (single-quoted here-string, `'@` MUST be at column 0):
+```powershell
+@'
+NODE_ENV=development
+PORT=3000
+DATABASE_URL=postgresql://postgres:jharanai@localhost:5432/jharanai
+DIRECT_URL=postgresql://postgres:jharanai@localhost:5432/jharanai
+JWT_SECRET=local-dev-secret-at-least-16-chars-long
+JWT_EXPIRES_IN=7d
+PAYMENT_PROVIDER=stub
+MESSAGING_PROVIDER=stub
+SMS_PROVIDER=console
+STORAGE_PROVIDER=local
+ADMIN_ORIGIN=http://localhost:3001
+BUSINESS_TZ=Asia/Kolkata
+'@ | Out-File -FilePath apps\backend\.env -Encoding utf8
+```
+
 ### 3. Run migrations + seed
 
+**bash:**
 ```bash
 cd apps/backend
-npm run db:generate              # generate Prisma client
-npm run db:migrate               # applies 0000_init + 0001 + 0002
-npm run db:seed                  # creates Anil Das admin + 6 routes + customers
+npm run db:generate && npm run db:migrate && npm run db:seed
 cd ../..
+```
+
+**Windows PowerShell** (run as separate commands — `&&` is a parse error in PS 5.1):
+```powershell
+cd apps\backend
+npm run db:generate
+npm run db:migrate
+npm run db:seed
+cd ..\..
 ```
 
 Seed output will print:

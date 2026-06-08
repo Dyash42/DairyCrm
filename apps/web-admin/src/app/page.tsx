@@ -19,7 +19,19 @@ import { formatINR } from '@jharanai/shared';
 
 type Range = 'TODAY' | 'WEEK' | 'MONTH';
 
-const TODAY_LABEL = 'Mon, 2 Jun 2026';
+/**
+ * Format today's date the way the dashboard topbar expects. The
+ * previous hardcoded `'Mon, 2 Jun 2026'` made every demo + production
+ * deploy look stale (and was the literal design date).
+ */
+function todayLabel(): string {
+  return new Date().toLocaleDateString('en-IN', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
 
 export default function DashboardPage() {
   const [range, setRange] = useState<Range>('TODAY');
@@ -68,7 +80,7 @@ export default function DashboardPage() {
                 live
               </span>
             )}
-            <span>{TODAY_LABEL}</span>
+            <span>{todayLabel()}</span>
           </div>
         </div>
 
@@ -196,9 +208,9 @@ export default function DashboardPage() {
                 message={
                   <>
                     <strong className="font-semibold">
-                      {unassignedRoute.routeName} (Hill Patna)
+                      {unassignedRoute.routeName}
                     </strong>{' '}
-                    has no executive assigned — 54 customers unserved.
+                    has no executive assigned.
                   </>
                 }
                 cta="Assign now"

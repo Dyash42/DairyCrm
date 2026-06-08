@@ -97,6 +97,10 @@ beforeAll(async () => {
 
   app = Fastify();
   app.decorate('authenticate', fakeJwtAuth());
+  // requireRole is required at registration time by the payments module
+  // (admin-only on list + manual record). Stub it to a no-op since the
+  // tests only exercise the unauthenticated webhook route.
+  app.decorate('requireRole', () => async () => {});
   await app.register(registerPaymentRoutes, { prefix: '/payments' });
   await app.ready();
 });

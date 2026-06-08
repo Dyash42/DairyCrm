@@ -33,7 +33,11 @@ const CreateBody = z.object({
 const PatchBody = CreateBody.partial();
 
 export async function registerProductRoutes(app: App) {
+  // Admin-only — pricing + catalog. Without this guard any EXECUTIVE
+  // could create / rename / drop products or change ratePerUnit
+  // (which is the price the bot quotes to customers).
   app.addHook('onRequest', app.authenticate);
+  app.addHook('onRequest', app.requireRole('ADMIN'));
 
   app.get('/', async () => {
     const products = await prisma.product.findMany({

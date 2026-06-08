@@ -56,7 +56,12 @@ async function resolveRecipientPhones(
 }
 
 export async function registerBroadcastRoutes(app: App) {
+  // Admin-only — sending a broadcast is sending a marketing/utility
+  // WhatsApp template to potentially 400+ customers; it has billing +
+  // brand implications. Without this guard any EXECUTIVE could fire a
+  // blast at will.
   app.addHook('onRequest', app.authenticate);
+  app.addHook('onRequest', app.requireRole('ADMIN'));
 
   app.get('/', async () => {
     const rows = await prisma.broadcast.findMany({
@@ -81,7 +86,7 @@ export async function registerBroadcastRoutes(app: App) {
 
   app.post('/', {
     handler: async (req, reply) => {
-      const body = req.body as z.infer<typeof CreateBody>;
+      const body = CreateBody.parse(req.body);
       const me = req.user;
 
       // Guard against the unwired target until the schema column lands.
@@ -122,26 +127,41 @@ export async function registerBroadcastRoutes(app: App) {
   });
 
   app.post('/:id/send', {
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
+
+      // Atomic claim: only one caller can flip DRAFT/SCHEDULED → SENDING.
+      // Without this, a double-click on "Send" (or two admins clicking
+      // at the same time) double-fires the entire blast. Blocks SENT and
+      // SENDING — the previous code only blocked SENT, leaving a fresh
+      // re-fire path while the first one was still in flight.
+      const claim = await prisma.broadcast.updateMany({
+        where: {
+          id,
+          status: { in: [BroadcastStatus.DRAFT, BroadcastStatus.SCHEDULED] },
+        },
+        data: { status: BroadcastStatus.SENDING },
+      });
+      if (claim.count !== 1) {
+        const current = await prisma.broadcast.findUnique({ where: { id } });
+        if (!current) return reply.status(404).send({ error: 'NotFound' });
+        return reply.status(409).send({
+          error: 'InvalidStateTransition',
+          message: `Broadcast is ${current.status}; only DRAFT or SCHEDULED can be sent.`,
+        });
+      }
+
       const b = await prisma.broadcast.findUnique({
         where: { id },
         include: { routes: true },
       });
       if (!b) return reply.status(404).send({ error: 'NotFound' });
-      if (b.status === BroadcastStatus.SENT) {
-        return reply.status(409).send({ error: 'AlreadySent' });
-      }
 
       const phones = await resolveRecipientPhones(
         b.target,
         b.routes.map((r) => r.routeId),
       );
-
-      await prisma.broadcast.update({
-        where: { id },
-        data: { status: BroadcastStatus.SENDING, sentCount: phones.length },
-      });
 
       let delivered = 0;
       let failed = 0;
@@ -153,16 +173,43 @@ export async function registerBroadcastRoutes(app: App) {
             templateName: TEMPLATES.broadcast_route_update.name,
             variables: { message_body: b.message },
           });
+          // Persist per-recipient row so admins can investigate
+          // exactly who got it. The previous code aggregated to
+          // delivered/failed counts only, with no way to retry the
+          // failed ones or audit a specific customer's complaint.
+          await prisma.whatsAppLog.create({
+            data: {
+              phone,
+              direction: 'OUTBOUND',
+              templateId: TEMPLATES.broadcast_route_update.name,
+              category: 'MARKETING',
+              body: b.message.slice(0, 500),
+              status: 'sent',
+            },
+          }).catch(() => undefined);
           delivered += 1;
         } catch {
           failed += 1;
+          await prisma.whatsAppLog.create({
+            data: {
+              phone,
+              direction: 'OUTBOUND',
+              templateId: TEMPLATES.broadcast_route_update.name,
+              category: 'MARKETING',
+              body: b.message.slice(0, 500),
+              status: 'failed',
+            },
+          }).catch(() => undefined);
         }
       }
 
       const updated = await prisma.broadcast.update({
         where: { id },
         data: {
-          status: failed === phones.length ? BroadcastStatus.FAILED : BroadcastStatus.SENT,
+          status: failed === phones.length && phones.length > 0
+            ? BroadcastStatus.FAILED
+            : BroadcastStatus.SENT,
+          sentCount: phones.length,
           deliveredCount: delivered,
           failedCount: failed,
         },

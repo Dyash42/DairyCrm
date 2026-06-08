@@ -46,30 +46,21 @@ export function parseCustomerCode(s: string): { prefix: string; value: number } 
 /**
  * Atomically allocate the next code.
  *
- * Implementation note: Prisma's interactive transaction wraps in a SQL tx.
- * We `update` the counter row with `lastValue: { increment: 1 }` and then
- * read the resulting `lastValue`. Postgres serializes concurrent updates on
- * the same row, so two callers can never see the same value.
- *
- * The counter row must exist — seed handles that. If for any reason it
- * doesn't (e.g. fresh dev DB, no seed), we create it with a sensible default
- * via upsert on first call.
+ * Implementation: `upsert` so the find+create-or-update is ONE statement
+ * — the previous "findUnique → create OR update" two-step had a race on
+ * a fresh DB. Two parallel onboardings both saw `existing === null` and
+ * both tried `create`; the second hit the primary-key unique violation
+ * and 500ed. Postgres serializes the upsert on the (key) primary key,
+ * so concurrent callers always see distinct lastValue.
  */
 export async function nextCustomerCode(
   prisma: PrismaClient,
   prefix: CustomerCodePrefix = CUSTOMER_CODE_PREFIX,
 ): Promise<string> {
-  const row = await prisma.$transaction(async (tx) => {
-    const existing = await tx.customerCodeCounter.findUnique({ where: { key: COUNTER_KEY } });
-    if (existing) {
-      return tx.customerCodeCounter.update({
-        where: { key: COUNTER_KEY },
-        data: { lastValue: { increment: 1 } },
-      });
-    }
-    return tx.customerCodeCounter.create({
-      data: { key: COUNTER_KEY, lastValue: CUSTOMER_CODE_INITIAL + 1 },
-    });
+  const row = await prisma.customerCodeCounter.upsert({
+    where: { key: COUNTER_KEY },
+    create: { key: COUNTER_KEY, lastValue: CUSTOMER_CODE_INITIAL + 1 },
+    update: { lastValue: { increment: 1 } },
   });
   return formatCustomerCode(row.lastValue, prefix);
 }

@@ -47,8 +47,13 @@ vi.mock('../../prisma', () => {
   // customer balance increment in a single tx.
   const prismaMock: any = {
     delivery: {
-      async findUnique({ where }: { where: { id: string } }) {
-        return deliveries.get(where.id) ?? null;
+      async findUnique({ where, include }: any) {
+        const row = deliveries.get(where.id);
+        if (!row) return null;
+        if (include?.customer) {
+          return { ...row, customer: { id: row.customerId, name: 'Test', code: 'JHR-100001' } };
+        }
+        return row;
       },
       async update({ where, data, include }: any) {
         const row = deliveries.get(where.id);
@@ -59,6 +64,18 @@ vi.mock('../../prisma', () => {
           return { ...next, customer: { id: next.customerId, name: 'Test', code: 'JHR-100001' } };
         }
         return next;
+      },
+      // The new idempotency path uses updateMany with a status filter
+      // so concurrent retries don't double-credit. Mock applies the
+      // update only if every where-field matches, and returns the
+      // Prisma-shaped `{ count }`.
+      async updateMany({ where, data }: any) {
+        const row = deliveries.get(where.id);
+        if (!row) return { count: 0 };
+        if (where.status && row.status !== where.status) return { count: 0 };
+        const next: DeliveryRow = { ...row, ...data };
+        deliveries.set(where.id, next);
+        return { count: 1 };
       },
       async count() {
         return deliveries.size;

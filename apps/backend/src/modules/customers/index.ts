@@ -19,7 +19,11 @@ import { CustomerStatus, QrCodeStatus } from '@prisma/client';
 
 import { prisma } from '../../prisma';
 import { nextCustomerCode } from '../../services/customer-code';
-import { generateQrDataUrl } from '../../services/qrcode';
+import {
+  generateQrDataUrl,
+  buildVersionedQrPayload,
+  parseVersionedQrPayload,
+} from '../../services/qrcode';
 import { notFound, isUniqueConstraintError } from '../../utils/http';
 import { normalizePhone } from '../../utils/phone';
 import { registerCustomerBulkRoutes } from './bulk';
@@ -27,7 +31,10 @@ import { registerCustomerBulkRoutes } from './bulk';
 const ListQuery = z.object({
   status: z.nativeEnum(CustomerStatus).optional(),
   routeId: z.string().optional(),
-  q: z.string().optional(),
+  // Min length 3 — a 2-char query like '99' matched every customer
+  // whose phone contains those digits. With 400-500 customers a few
+  // shorthand queries dumped the whole table. Strict ≥ 3 chars.
+  q: z.string().trim().min(3).max(100).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().optional(),
 });
@@ -242,14 +249,62 @@ export async function registerCustomerRoutes(app: App) {
     },
   });
 
-  /** GET /customers/by-code/:code — the mobile scanner's primary lookup. */
+  /**
+   * GET /customers/by-code/:code — the mobile scanner's primary lookup.
+   *
+   * EXECUTIVE callers are restricted to customers on their own route.
+   * Without this guard, any milkman could iterate JHR-1XXXXX codes and
+   * enumerate the entire customer table's name + address + phone.
+   * ADMIN is unrestricted (they need to debug arbitrary scans).
+   */
   app.get('/by-code/:code', {
     handler: async (req, reply) => {
-      const { code } = req.params as { code: string };
+      const { code: rawCode } = req.params as { code: string };
+      // Parse versioned payload `JHR-100455:v3`. Legacy unversioned
+      // codes (`JHR-100455`) get scannedVersion = null and skip the
+      // version check — they only worked before regenerate.
+      const trimmed = rawCode.trim().toUpperCase();
+      const parsed = parseVersionedQrPayload(trimmed);
+      const customerCode = parsed?.customerCode ?? trimmed;
+      const scannedVersion = parsed?.version ?? null;
+
       const customer = await prisma.customer.findUnique({
-        where: { code: code.trim().toUpperCase() },
+        where: { code: customerCode },
       });
       if (!customer) return notFound(reply, 'Customer');
+
+      // If the payload was versioned, verify the QR row is still
+      // ACTIVE at that version. A revoked QR scans to its old version
+      // number which no longer matches the currently-ACTIVE row, so
+      // we 404 — the "regenerate" admin action now genuinely
+      // invalidates the old printed sticker.
+      if (scannedVersion !== null) {
+        const activeQr = await prisma.qrCode.findFirst({
+          where: { customerId: customer.id, status: 'ACTIVE' },
+          orderBy: { version: 'desc' },
+          select: { version: true },
+        });
+        if (!activeQr || activeQr.version !== scannedVersion) {
+          return reply.status(410).send({
+            error: 'QrRevoked',
+            message: 'This QR has been replaced. Ask the customer for the latest sticker.',
+          });
+        }
+      }
+
+      const me = req.user;
+      if (me.role === 'EXECUTIVE') {
+        const exec = await prisma.executive.findFirst({
+          where: { userId: me.sub },
+          select: { routeId: true },
+        });
+        // Treat off-route lookups as 404 (not 403) so an attacker
+        // can't distinguish "exists on another route" from "doesn't
+        // exist at all" — same shape as a genuine missing code.
+        if (!exec?.routeId || customer.routeId !== exec.routeId) {
+          return notFound(reply, 'Customer');
+        }
+      }
       return {
         id: customer.id,
         code: customer.code,
@@ -299,11 +354,17 @@ export async function registerCustomerRoutes(app: App) {
         });
         const version = (last?.version ?? 0) + 1;
 
-        const dataUrl = await generateQrDataUrl(customer.code);
+        // Encode the version IN the QR payload so the scanner can
+        // detect a stale printed sticker. The previous regenerate
+        // re-encoded the same `customer.code`, so old printed QR
+        // stickers still scanned successfully — the security boundary
+        // was theatre. Versioned payload + by-code verifier is the fix.
+        const versionedPayload = buildVersionedQrPayload(customer.code, version);
+        const dataUrl = await generateQrDataUrl(versionedPayload);
         const fresh = await tx.qrCode.create({
           data: {
             customerId: id,
-            payload: customer.code,
+            payload: versionedPayload,
             url: dataUrl,
             version,
             status: QrCodeStatus.ACTIVE,
@@ -328,7 +389,10 @@ export async function registerCustomerRoutes(app: App) {
       // and CSV import don't drift (the audit's M1 finding).
       body.phone = normalizePhone(body.phone);
       const code = await nextCustomerCode(prisma);
-      const qrCodeUrl = await generateQrDataUrl(code);
+      // v1 QR — versioned from the start so regenerate-then-scan-old
+      // works correctly. New mobile scanners parse both forms.
+      const versionedPayload = buildVersionedQrPayload(code, 1);
+      const qrCodeUrl = await generateQrDataUrl(versionedPayload);
       try {
         const customer = await prisma.$transaction(async (tx) => {
           const c = await tx.customer.create({
@@ -337,7 +401,7 @@ export async function registerCustomerRoutes(app: App) {
           await tx.qrCode.create({
             data: {
               customerId: c.id,
-              payload: code,
+              payload: versionedPayload,
               url: qrCodeUrl,
               status: QrCodeStatus.ACTIVE,
               version: 1,

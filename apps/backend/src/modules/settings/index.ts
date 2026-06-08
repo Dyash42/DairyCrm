@@ -17,7 +17,7 @@ import type { App } from '../../types';
 import { z } from 'zod';
 
 import { prisma } from '../../prisma';
-import { settings } from '../../services/settings';
+import { settings, SETTING_DEFINITIONS } from '../../services/settings';
 import { notFound } from '../../utils/http';
 
 const HolidayBody = z.object({
@@ -31,17 +31,41 @@ const SettingUpdateBody = z.object({
 });
 
 export async function registerSettingsRoutes(app: App) {
+  // Admin-only — settings change billing rates, OTP length, pause caps,
+  // support phone, and other business knobs. Without this guard any
+  // EXECUTIVE could weaken security or redirect customers.
   app.addHook('onRequest', app.authenticate);
+  app.addHook('onRequest', app.requireRole('ADMIN'));
 
   app.get('/', async () => {
     const grouped = await settings.listAllGrouped();
     return { groups: grouped };
   });
 
+  // Allowlist lookup — building it once at module load is cheap.
+  const definitionByKey = new Map(SETTING_DEFINITIONS.map((d) => [d.key, d]));
+
   app.put('/:key', {
     handler: async (req, reply) => {
       const { key } = req.params as { key: string };
       const { value } = SettingUpdateBody.parse(req.body);
+      // Allowlist: refuse keys not in SETTING_DEFINITIONS. Without this
+      // an attacker (or buggy admin UI) could write garbage rows to the
+      // Setting table, or override defaults that were never meant to be
+      // user-tunable.
+      const def = definitionByKey.get(key);
+      if (!def) {
+        return reply.status(404).send({
+          error: 'UnknownSetting',
+          message: `Setting key '${key}' is not defined.`,
+        });
+      }
+      if (def.editable === false) {
+        return reply.status(422).send({
+          error: 'ReadOnlySetting',
+          message: `Setting '${key}' is managed by env / not editable from the admin UI.`,
+        });
+      }
       const me = req.user;
       await settings.set(key, value, me.sub);
       return reply.status(200).send({ ok: true, key, value });

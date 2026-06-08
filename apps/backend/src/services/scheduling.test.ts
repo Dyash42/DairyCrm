@@ -46,6 +46,7 @@ const baseSub = (overrides: Partial<ScheduleSubscription> = {}): ScheduleSubscri
   customerId: 'c1',
   routeId: 'r1',
   litresPerDay: 1,
+  ratePerLitre: 64,
   daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
   startDate: utc('2026-01-01'),
   endDate: null,
@@ -148,10 +149,10 @@ describe('getDeliveriesForDate', () => {
 describe('groupByRoute', () => {
   it('groups by routeId and bucket unassigned to "unassigned"', () => {
     const grouped = groupByRoute([
-      { customerId: 'c1', routeId: 'r1', litres: 1, date: utc('2026-06-02') },
-      { customerId: 'c2', routeId: 'r1', litres: 2, date: utc('2026-06-02') },
-      { customerId: 'c3', routeId: 'r2', litres: 1, date: utc('2026-06-02') },
-      { customerId: 'c4', routeId: null, litres: 1, date: utc('2026-06-02') },
+      { customerId: 'c1', routeId: 'r1', litres: 1, ratePerLitre: 64, date: utc('2026-06-02') },
+      { customerId: 'c2', routeId: 'r1', litres: 2, ratePerLitre: 64, date: utc('2026-06-02') },
+      { customerId: 'c3', routeId: 'r2', litres: 1, ratePerLitre: 64, date: utc('2026-06-02') },
+      { customerId: 'c4', routeId: null, litres: 1, ratePerLitre: 64, date: utc('2026-06-02') },
     ]);
     expect(grouped.get('r1')).toHaveLength(2);
     expect(grouped.get('r2')).toHaveLength(1);

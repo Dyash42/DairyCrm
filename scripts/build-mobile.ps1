@@ -1,17 +1,17 @@
-<#
+﻿<#
 .SYNOPSIS
     Build the Jharanai Flutter mobile APK inside a Docker container.
 
 .DESCRIPTION
     Lets you produce a working app-debug.apk WITHOUT installing the
     Flutter SDK on the host machine. The container image
-    (ghcr.io/cirruslabs/flutter:stable) carries the Flutter toolchain;
+    (ghcr.io/cirruslabs/flutter:3.24.5) carries the Flutter toolchain;
     your laptop's PATH and disk outside Docker stay untouched.
 
     What the script does:
       1. Scaffolds android/ on first run (flutter create).
       2. Patches AndroidManifest.xml with the permissions the app needs
-         (CAMERA, INTERNET, ACCESS_NETWORK_STATE) — without these the QR
+         (CAMERA, INTERNET, ACCESS_NETWORK_STATE) â€” without these the QR
          scanner returns a black screen and the API client can't reach
          the backend.
       3. Runs `flutter pub get` + `dart run build_runner build` to
@@ -51,7 +51,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path "$PSScriptRoot\.."
 $mobile   = Join-Path $repoRoot "apps\mobile"
 $buildMode = if ($Release) { "release" } else { "debug" }
-$image    = "ghcr.io/cirruslabs/flutter:stable"
+$image    = "ghcr.io/cirruslabs/flutter:3.24.5"
 
 if (-not (Test-Path $mobile)) {
     Write-Error "apps\mobile directory not found at $mobile"
@@ -67,8 +67,8 @@ Write-Host "  Image:    $image"
 Write-Host ""
 
 # --- Stage 1: container-side scaffolding + first build ---
-# A single docker run does flutter create (idempotent) → pub get →
-# build_runner → build apk. Re-runs are fast because Flutter caches
+# A single docker run does flutter create (idempotent) â†’ pub get â†’
+# build_runner â†’ build apk. Re-runs are fast because Flutter caches
 # pub deps + Gradle dirs inside the mounted volume.
 Write-Host "[1/3] Running Flutter toolchain in Docker..." -ForegroundColor Yellow
 docker run --rm `
@@ -144,7 +144,7 @@ if ($needPatch) {
         -v "${mobile}:/app" `
         -w /app `
         $image `
-        bash -c "flutter build apk --$buildMode --dart-define=API_BASE=$ApiBase"
+        bash -c "flutter pub get && flutter build apk --$buildMode --dart-define=API_BASE=$ApiBase"
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Rebuild after manifest patch failed."
         exit $LASTEXITCODE

@@ -25,6 +25,10 @@ export interface ScheduleSubscription {
   customerId: string;
   routeId: string | null;
   litresPerDay: number;
+  /** Rate at subscription creation — snapshotted on each Delivery so
+   *  historical billing doesn't change retroactively when admin edits
+   *  the Product's rate. */
+  ratePerLitre: number;
   daysOfWeek: number[];
   startDate: Date;
   endDate: Date | null;
@@ -48,6 +52,8 @@ export interface ScheduledDelivery {
   customerId: string;
   routeId: string | null;
   litres: number;
+  /** Snapshotted from the subscription so billing is stable. */
+  ratePerLitre: number;
   date: Date;
 }
 
@@ -101,6 +107,7 @@ export async function getDeliveriesForDate(
       customerId: s.customerId,
       routeId: s.routeId,
       litres: s.litresPerDay,
+      ratePerLitre: s.ratePerLitre,
       date: day,
     });
   }

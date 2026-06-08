@@ -82,17 +82,49 @@ export class CashfreePaymentProvider implements PaymentProvider {
     };
   }
 
-  verifyWebhookSignature(rawBody: string, signature: string): boolean {
+  /**
+   * Verify a Cashfree webhook.
+   *
+   * Per Cashfree docs (https://docs.cashfree.com/docs/webhook-security):
+   *   signature = base64( HMAC-SHA256( timestamp + rawBody, secret ) )
+   *
+   * Where `timestamp` is the value of the `x-webhook-timestamp` header
+   * Cashfree includes on every webhook call. The previous code only
+   * HMAC'd the body — Cashfree's actual webhooks would NEVER verify
+   * because the timestamp prefix was missing.
+   *
+   * `timestamp` arg is the raw header value; the webhook route reads
+   * `req.headers['x-webhook-timestamp']` and passes it here.
+   *
+   * Replay protection: reject webhooks whose timestamp is more than
+   * MAX_AGE_MS old. A captured signed body can otherwise be replayed
+   * indefinitely.
+   */
+  verifyWebhookSignature(
+    rawBody: string,
+    signature: string,
+    timestamp?: string,
+  ): boolean {
     const c = loadConfig();
     if (!c.CASHFREE_WEBHOOK_SECRET) return false;
     if (!signature) return false;
-    // Cashfree concatenates timestamp + body before HMAC; in production we
-    // also pass the timestamp from the header. For now we accept just the
-    // body version — the verifier in the webhook route will supply the
-    // wrapped string with timestamp.
+    if (!timestamp) return false;
+
+    // Reject stale events (>5 min). Cashfree retries with the SAME
+    // timestamp so this also blocks an attacker who captured an old
+    // body+signature from replaying it later.
+    const MAX_AGE_MS = 5 * 60 * 1000;
+    const eventTs = Number(timestamp);
+    if (!Number.isFinite(eventTs)) return false;
+    // Cashfree timestamps are in milliseconds. Allow small clock skew
+    // (1 min in the future).
+    const now = Date.now();
+    if (eventTs > now + 60_000) return false;
+    if (now - eventTs > MAX_AGE_MS) return false;
+
     const expected = crypto
       .createHmac('sha256', c.CASHFREE_WEBHOOK_SECRET)
-      .update(rawBody, 'utf8')
+      .update(`${timestamp}${rawBody}`, 'utf8')
       .digest('base64');
     // Length-guard first — timingSafeEqual throws on mismatched lengths.
     // Constant-time compare prevents secret exfiltration via timing oracle

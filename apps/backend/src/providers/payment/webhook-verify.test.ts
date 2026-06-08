@@ -52,8 +52,18 @@ function razorpaySign(body: string, secret = RAZORPAY_SECRET): string {
   return crypto.createHmac('sha256', secret).update(body, 'utf8').digest('hex');
 }
 
-function cashfreeSign(body: string, secret = CASHFREE_SECRET): string {
-  return crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64');
+function cashfreeSign(
+  body: string,
+  timestamp: string,
+  secret = CASHFREE_SECRET,
+): string {
+  // Cashfree HMACs over `timestamp + body`, not body alone.
+  return crypto.createHmac('sha256', secret).update(`${timestamp}${body}`, 'utf8').digest('base64');
+}
+
+/** A recent timestamp the verifier will accept (within the 5-min replay window). */
+function freshTs(): string {
+  return String(Date.now());
 }
 
 describe('RazorpayPaymentProvider.verifyWebhookSignature', () => {
@@ -112,27 +122,46 @@ describe('CashfreePaymentProvider.verifyWebhookSignature', () => {
   beforeEach(clearAll);
   afterEach(clearAll);
 
-  it('accepts a valid HMAC-SHA256 base64 signature', () => {
+  it('accepts a valid HMAC-SHA256 base64 signature with fresh timestamp', () => {
     setCashfreeCreds();
+    const ts = freshTs();
     const body = JSON.stringify({ type: 'PAYMENT_SUCCESS_WEBHOOK', data: {} });
-    const sig = cashfreeSign(body);
-    expect(new CashfreePaymentProvider().verifyWebhookSignature(body, sig)).toBe(true);
+    const sig = cashfreeSign(body, ts);
+    expect(new CashfreePaymentProvider().verifyWebhookSignature(body, sig, ts)).toBe(true);
   });
 
   it('rejects a forged signature', () => {
     setCashfreeCreds();
+    const ts = freshTs();
     const body = JSON.stringify({ type: 'PAYMENT_SUCCESS_WEBHOOK' });
-    const sig = cashfreeSign(body, 'attacker-secret');
-    expect(new CashfreePaymentProvider().verifyWebhookSignature(body, sig)).toBe(false);
+    const sig = cashfreeSign(body, ts, 'attacker-secret');
+    expect(new CashfreePaymentProvider().verifyWebhookSignature(body, sig, ts)).toBe(false);
   });
 
   it('rejects when no webhook secret is configured', () => {
     process.env.CASHFREE_APP_ID = 'cf-id';
     process.env.CASHFREE_SECRET_KEY = 'cf-secret';
     _resetConfigForTests();
+    const ts = freshTs();
     expect(
-      new CashfreePaymentProvider().verifyWebhookSignature('{}', cashfreeSign('{}')),
+      new CashfreePaymentProvider().verifyWebhookSignature('{}', cashfreeSign('{}', ts), ts),
     ).toBe(false);
+  });
+
+  it('rejects replays: a timestamp older than 5 minutes is refused even with a valid signature', () => {
+    setCashfreeCreds();
+    const staleTs = String(Date.now() - 6 * 60 * 1000);
+    const body = JSON.stringify({ type: 'PAYMENT_SUCCESS_WEBHOOK' });
+    const sig = cashfreeSign(body, staleTs);
+    expect(new CashfreePaymentProvider().verifyWebhookSignature(body, sig, staleTs)).toBe(false);
+  });
+
+  it('rejects when the timestamp header is missing entirely', () => {
+    setCashfreeCreds();
+    const ts = freshTs();
+    const body = JSON.stringify({ type: 'PAYMENT_SUCCESS_WEBHOOK' });
+    const sig = cashfreeSign(body, ts);
+    expect(new CashfreePaymentProvider().verifyWebhookSignature(body, sig, undefined)).toBe(false);
   });
 });
 

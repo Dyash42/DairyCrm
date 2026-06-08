@@ -41,6 +41,7 @@ class CapturingSender extends WhatsAppSender {
 
   override async sendBatch(actions: OutboundAction[]) {
     for (const a of actions) await this.send(a);
+    return { sent: actions.length, failed: 0 };
   }
 }
 

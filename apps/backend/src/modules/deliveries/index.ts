@@ -18,6 +18,7 @@ import { Prisma } from '@prisma/client';
 
 import { prisma } from '../../prisma';
 import { getDeliveriesForDate, type ScheduleRepo } from '../../services/scheduling';
+import { startOfBusinessDayUTC } from '../../utils/dates';
 
 function buildScheduleRepo(): ScheduleRepo {
   return {
@@ -31,6 +32,7 @@ function buildScheduleRepo(): ScheduleRepo {
         customerId: s.customerId,
         routeId: s.customer.routeId,
         litresPerDay: Number(s.litresPerDay),
+        ratePerLitre: Number(s.ratePerLitre),
         daysOfWeek: s.daysOfWeek,
         startDate: s.startDate,
         endDate: s.endDate,
@@ -74,6 +76,10 @@ async function materializeTodaysDeliveries(today: Date) {
         customerId: p.customerId,
         routeId: p.routeId as string,
         scheduledLitres: p.litres,
+        // Snapshot rate at materialization — historical billing reads
+        // delivery.ratePerLitre rather than re-querying the current
+        // subscription, so admin rate edits don't rewrite past invoices.
+        ratePerLitre: p.ratePerLitre,
         scheduledFor: p.date,
         status: DeliveryStatus.PENDING,
       })),
@@ -81,10 +87,10 @@ async function materializeTodaysDeliveries(today: Date) {
   });
 }
 
-function startOfTodayUTC(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-}
+// "today" is always the business-TZ-anchored UTC midnight. The previous
+// startOfTodayUTC() was off by ~5h30m which caused early-morning (IST)
+// invocations to materialize against yesterday's date.
+const startOfTodayUTC = startOfBusinessDayUTC;
 
 const ConfirmBody = z.object({
   deliveredLitres: z.coerce.number().min(0).max(50).optional(),
@@ -156,14 +162,48 @@ export async function registerDeliveryRoutes(app: App) {
   });
 
   app.get('/route/:routeId/today', {
-    handler: async (req) => {
+    handler: async (req, reply) => {
       const { routeId } = req.params as { routeId: string };
+      const me = req.user;
+
+      // Cross-route PII guard. The previous code returned full customer
+      // rows (name, phone, altPhone, address, balance, ...) for any
+      // route the caller asked about — an executive could iterate
+      // routeIds and dump every customer's data. Now: an EXECUTIVE
+      // gets 403 unless the requested routeId is their assigned route.
+      if (me.role === 'EXECUTIVE') {
+        const exec = await prisma.executive.findFirst({
+          where: { userId: me.sub },
+          select: { routeId: true },
+        });
+        if (!exec || exec.routeId !== routeId) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'Executive can only query their own route',
+          });
+        }
+      }
+
       const today = startOfTodayUTC();
       await materializeTodaysDeliveries(today);
 
+      // Narrow include to the fields the mobile UI actually consumes —
+      // full Customer was overkill and shipped balance/email/altPhone
+      // that the mobile screen never displayed.
       const deliveries = await prisma.delivery.findMany({
         where: { routeId, scheduledFor: today },
-        include: { customer: true },
+        include: {
+          customer: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              addressLine1: true,
+              routeSeq: true,
+              litresPerDay: true,
+            },
+          },
+        },
         orderBy: { customer: { routeSeq: 'asc' } },
       });
       return { date: today.toISOString(), routeId, deliveries };
@@ -209,13 +249,18 @@ export async function registerDeliveryRoutes(app: App) {
         ? DeliveryStatus.PARTIAL
         : DeliveryStatus.DELIVERED;
 
-      // Atomic: stamp the delivery + (optionally) record cash payment +
-      // credit Customer.balance. Either all three happen or none — we
-      // never want a delivery marked DELIVERED with cash silently dropped
-      // (which is what the previous code did).
+      // Idempotent flip: ONLY a PENDING row gets touched. If the offline
+      // sync engine retries after a network timeout, the second call
+      // finds the row in DELIVERED/PARTIAL state, updateMany returns
+      // count===0, and the cash double-credit path never runs.
+      //
+      // Without this guard, every retry created a fresh Payment row
+      // (Payment.reference isn't unique) and re-incremented
+      // Customer.balance — silently turning ₹100 cash into ₹300 over
+      // 3 retries.
       const result = await prisma.$transaction(async (tx) => {
-        const updated = await tx.delivery.update({
-          where: { id },
+        const claim = await tx.delivery.updateMany({
+          where: { id, status: DeliveryStatus.PENDING },
           data: {
             status,
             deliveredLitres: actual,
@@ -223,13 +268,25 @@ export async function registerDeliveryRoutes(app: App) {
             ...(body.note !== undefined ? { note: body.note } : {}),
             ...(executiveId ? { executiveId } : {}),
           },
+        });
+        if (claim.count !== 1) {
+          // Already confirmed (or skipped) — return current row as-is,
+          // do NOT touch payment/balance again. Idempotent retry.
+          const existing = await tx.delivery.findUnique({
+            where: { id },
+            include: { customer: true },
+          });
+          return { row: existing!, alreadyDone: true as const };
+        }
+        const updated = await tx.delivery.findUnique({
+          where: { id },
           include: { customer: true },
         });
 
         if (typeof body.cashCollected === 'number' && body.cashCollected > 0) {
           await tx.payment.create({
             data: {
-              customerId: updated.customerId,
+              customerId: updated!.customerId,
               amount: body.cashCollected,
               mode: PaymentMode.CASH,
               status: PaymentStatus.PAID,
@@ -238,15 +295,24 @@ export async function registerDeliveryRoutes(app: App) {
             },
           });
           await tx.customer.update({
-            where: { id: updated.customerId },
+            where: { id: updated!.customerId },
             data: { balance: { increment: body.cashCollected } },
           });
         }
 
-        return updated;
+        return { row: updated!, alreadyDone: false as const };
       });
 
-      return result;
+      // Surface "already confirmed" with a 200 + idempotent flag — the
+      // mobile offline-sync engine treats this the same as success and
+      // won't enqueue another retry. Caller still gets the row body.
+      if (result.alreadyDone) {
+        return reply
+          .header('x-idempotent', '1')
+          .status(200)
+          .send({ ...result.row, idempotent: true });
+      }
+      return result.row;
     },
   });
 
@@ -274,16 +340,28 @@ export async function registerDeliveryRoutes(app: App) {
         }
       }
 
-      const updated = await prisma.delivery.update({
-        where: { id },
+      // Idempotent skip — only PENDING flips. A retry from the offline
+      // queue lands on the already-SKIPPED row, claim.count===0, and
+      // we return the existing row with idempotent flag.
+      const claim = await prisma.delivery.updateMany({
+        where: { id, status: DeliveryStatus.PENDING },
         data: {
           status: DeliveryStatus.SKIPPED,
           note: body.reason ?? 'Skipped',
           ...(executiveId ? { executiveId } : {}),
         },
+      });
+      const current = await prisma.delivery.findUnique({
+        where: { id },
         include: { customer: true },
       });
-      return updated;
+      if (claim.count !== 1) {
+        return reply
+          .header('x-idempotent', '1')
+          .status(200)
+          .send({ ...current!, idempotent: true });
+      }
+      return current!;
     },
   });
 

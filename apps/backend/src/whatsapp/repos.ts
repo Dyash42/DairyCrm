@@ -55,14 +55,33 @@ export const prismaBotRepos: BotRepos = {
     const endDate = new Date(startDate);
     endDate.setUTCDate(endDate.getUTCDate() + input.durationDays);
 
-    // Use the customer's current ratePerLitre. For onboarding flow we use
-    // the default 64 since the bot only collects litres + days. Admin can
-    // override via the REST API.
-    const ratePerLitre = 64;
+    // Look up the COW_MILK product so the bot quotes the CURRENT admin-
+    // edited rate, not a hardcoded constant. If the product row is
+    // missing (fresh DB, no seed) we fall back to the settings table's
+    // default rate, then finally to the DEFAULT_RATE_PER_LITRE_INR
+    // constant. This unifies the rate-resolution path between the bot
+    // and the admin /subscriptions endpoint.
+    const product = await prisma.product.findUnique({
+      where: { code: 'COW_MILK' },
+    });
+    let ratePerLitre: number;
+    let productId: string | null = null;
+    if (product) {
+      ratePerLitre = Number(product.ratePerUnit);
+      productId = product.id;
+    } else {
+      const { settings } = await import('../services/settings');
+      const { DEFAULT_RATE_PER_LITRE_INR } = await import('../constants');
+      ratePerLitre = await settings.getNumber(
+        'pricing.default_rate_per_litre_inr',
+        DEFAULT_RATE_PER_LITRE_INR,
+      );
+    }
 
     const sub = await prisma.subscription.create({
       data: {
         customerId: input.customerId,
+        productId,
         sku: 'COW_MILK',
         litresPerDay: input.litresPerDay,
         daysOfWeek: input.daysOfWeek,

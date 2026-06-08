@@ -116,6 +116,30 @@ async function sendOtp(phone: string, code: string): Promise<void> {
 
 // ----------------------- Routes -----------------------
 
+/**
+ * A pre-computed bcrypt hash of a random string. We compare against this
+ * when the user lookup misses, so bcrypt.compare always runs (and the
+ * timing of the 401 response no longer reveals whether the email was
+ * registered). The actual value doesn't matter — its only job is to
+ * burn the same ~100ms bcrypt CPU cost that a real comparison would.
+ */
+const DUMMY_BCRYPT_HASH =
+  '$2a$10$CwTycUXWue0Thq9StjUM0uJ8iZsHnPwQu0vp.YjSHmJWmrJg0qH9G';
+
+const AdminLoginBody = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(1).max(200),
+});
+
+const OtpRequestBody = z.object({
+  phone: z.string().min(10).max(20),
+});
+
+const OtpVerifyBody = z.object({
+  phone: z.string().min(10).max(20),
+  code: z.string().regex(/^\d{4,8}$/),
+});
+
 export async function registerAuthRoutes(app: App) {
   // POST /auth/admin/login
   app.route({
@@ -123,21 +147,29 @@ export async function registerAuthRoutes(app: App) {
     url: '/admin/login',
     config: { rateLimit: { max: RATE_LIMITS.auth.max, timeWindow: RATE_LIMITS.auth.timeWindowMs } },
     handler: async (req, reply) => {
-      const { email, password } = req.body as { email: string; password: string };
+      // Strict Zod parse instead of `as`-cast. Without this, a body
+      // like `{ email: { startsWith: "a" } }` reaches Prisma and a
+      // PrismaClientValidationError throws — leaking 500 (vs 401)
+      // becomes an oracle on whether the email type was accepted.
+      const { email, password } = AdminLoginBody.parse(req.body);
       const user = await prisma.user.findUnique({ where: { email } });
-      if (!user || user.role !== 'ADMIN' || !user.active || !user.passwordHash) {
-        return reply.status(401).send({ error: 'Invalid credentials' });
-      }
-      const ok = await bcrypt.compare(password, user.passwordHash);
-      if (!ok) {
+      const eligible =
+        Boolean(user) && user!.role === 'ADMIN' && user!.active && Boolean(user!.passwordHash);
+      // ALWAYS run bcrypt.compare — against the real hash if the user
+      // exists & is eligible, otherwise against a dummy hash. This
+      // closes the user-enumeration timing oracle (~100ms gap that
+      // previously revealed whether an admin email was registered).
+      const hashToCheck = eligible && user!.passwordHash ? user!.passwordHash : DUMMY_BCRYPT_HASH;
+      const ok = await bcrypt.compare(password, hashToCheck);
+      if (!eligible || !ok) {
         return reply.status(401).send({ error: 'Invalid credentials' });
       }
       const token = await reply.jwtSign({
-        sub: user.id,
+        sub: user!.id,
         role: 'ADMIN',
-        name: user.name,
+        name: user!.name,
       } as JwtPayload);
-      return { token, user: { id: user.id, name: user.name, role: user.role } };
+      return { token, user: { id: user!.id, name: user!.name, role: user!.role } };
     },
   });
 
@@ -147,7 +179,7 @@ export async function registerAuthRoutes(app: App) {
     url: '/executive/otp/request',
     config: { rateLimit: { max: RATE_LIMITS.auth.max, timeWindow: RATE_LIMITS.auth.timeWindowMs } },
     handler: async (req, reply) => {
-      const { phone } = req.body as { phone: string };
+      const { phone } = OtpRequestBody.parse(req.body);
       const normalized = normalizePhone(phone);
 
       const user = await prisma.user.findUnique({ where: { phone: normalized } });
@@ -173,7 +205,7 @@ export async function registerAuthRoutes(app: App) {
     url: '/executive/otp/verify',
     config: { rateLimit: { max: RATE_LIMITS.authVerify.max, timeWindow: RATE_LIMITS.authVerify.timeWindowMs } },
     handler: async (req, reply) => {
-      const { phone, code } = req.body as { phone: string; code: string };
+      const { phone, code } = OtpVerifyBody.parse(req.body);
       const normalized = normalizePhone(phone);
       const record = otpStore.get(normalized);
       if (!record || record.expiresAt < Date.now()) {

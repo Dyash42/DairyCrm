@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -158,7 +159,12 @@ class _TodaysRouteScreenState extends ConsumerState<TodaysRouteScreen> {
 
     return Scaffold(
       backgroundColor: JharanaiTokens.bg,
-      drawer: const _DevDrawer(),
+      // Dev drawer is debug-only — kDebugMode is a const compile-time
+      // boolean, so in release builds tree-shaking eliminates the
+      // drawer + all DemoMode wiring entirely. The previous code
+      // exposed the demo-mode picker to real milkmen, who could
+      // accidentally show fake data and confuse the backend audit.
+      drawer: kDebugMode ? const _DevDrawer() : null,
       body: SafeArea(
         bottom: false,
         child: Column(

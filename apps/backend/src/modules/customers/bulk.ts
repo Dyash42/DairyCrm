@@ -22,7 +22,7 @@ import {
   type ValidationIssue,
 } from '../../services/bulk-customer-import';
 import { nextCustomerCode } from '../../services/customer-code';
-import { generateQrDataUrl } from '../../services/qrcode';
+import { generateQrDataUrl, buildVersionedQrPayload } from '../../services/qrcode';
 import { settings } from '../../services/settings';
 import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
 
@@ -189,7 +189,8 @@ export async function registerCustomerBulkRoutes(app: App) {
           // Reserve code: prefer requested customer_code if provided, else
           // allocate from counter.
           const code = row.customerCode ?? (await nextCustomerCode(prisma));
-          const qrCodeUrl = await generateQrDataUrl(code);
+          const versionedPayload = buildVersionedQrPayload(code, 1);
+          const qrCodeUrl = await generateQrDataUrl(versionedPayload);
 
           const startDate = new Date(`${row.startDate}T00:00:00.000Z`);
           const endDate = new Date(startDate);
@@ -217,7 +218,7 @@ export async function registerCustomerBulkRoutes(app: App) {
             await tx.qrCode.create({
               data: {
                 customerId: customer.id,
-                payload: code,
+                payload: versionedPayload,
                 url: qrCodeUrl,
                 status: QrCodeStatus.ACTIVE,
                 version: 1,

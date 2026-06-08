@@ -28,7 +28,14 @@ const PatchBody = z.object({
 });
 
 export async function registerExecutiveRoutes(app: App) {
+  // Admin-only module — managing executives is operations work, not
+  // something a milkman can do to themselves or colleagues. The previous
+  // code only required authentication (any logged-in user, including
+  // every EXECUTIVE), which let any milkman with an OTP-issued JWT
+  // CRUD the executive roster, deactivate other execs, and reassign
+  // themselves to any route.
   app.addHook('onRequest', app.authenticate);
+  app.addHook('onRequest', app.requireRole('ADMIN'));
 
   app.get('/', async () => {
     const execs = await prisma.executive.findMany({
@@ -62,7 +69,7 @@ export async function registerExecutiveRoutes(app: App) {
 
   app.post('/', {
     handler: async (req, reply) => {
-      const body = req.body as z.infer<typeof CreateBody>;
+      const body = CreateBody.parse(req.body);
       try {
         const exec = await prisma.$transaction(async (tx) => {
           const user = await tx.user.create({
@@ -94,7 +101,7 @@ export async function registerExecutiveRoutes(app: App) {
   app.patch('/:id', {
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
-      const body = req.body as z.infer<typeof PatchBody>;
+      const body = PatchBody.parse(req.body);
       const exec = await prisma.executive.findUnique({ where: { id } });
       if (!exec) return reply.status(404).send({ error: 'NotFound' });
 

@@ -25,7 +25,13 @@ const AssignBody = z.object({
 });
 
 export async function registerRouteRoutes(app: App) {
+  // Admin-only — routes are an operations surface, not a milkman one.
+  // Without this guard any authenticated EXECUTIVE could create routes,
+  // reassign themselves via POST /:id/executive, or delete routes
+  // (the customer-count guard would protect populated routes but a fresh
+  // empty route is still deletable).
   app.addHook('onRequest', app.authenticate);
+  app.addHook('onRequest', app.requireRole('ADMIN'));
 
   app.get('/', {
     handler: async () => {
@@ -79,10 +85,9 @@ export async function registerRouteRoutes(app: App) {
 
   app.post('/', {
     handler: async (req, reply) => {
+      const body = CreateBody.parse(req.body);
       try {
-        const created = await prisma.route.create({
-          data: req.body as z.infer<typeof CreateBody>,
-        });
+        const created = await prisma.route.create({ data: body });
         return reply.status(201).send(created);
       } catch (e: unknown) {
         if (e instanceof Error && (e as { code?: string }).code === 'P2002') {
@@ -96,8 +101,9 @@ export async function registerRouteRoutes(app: App) {
   app.patch('/:id', {
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
+      const body = PatchBody.parse(req.body);
       const updated = await prisma.route
-        .update({ where: { id }, data: req.body as z.infer<typeof PatchBody> })
+        .update({ where: { id }, data: body })
         .catch(() => null);
       if (!updated) return reply.status(404).send({ error: 'NotFound' });
       return updated;
@@ -122,7 +128,7 @@ export async function registerRouteRoutes(app: App) {
   app.post('/:id/executive', {
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
-      const { executiveId } = req.body as z.infer<typeof AssignBody>;
+      const { executiveId } = AssignBody.parse(req.body);
 
       // Whole reassignment runs in one transaction. Otherwise two admins
       // assigning concurrently could leave the route with two execs

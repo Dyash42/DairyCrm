@@ -37,6 +37,10 @@ export const QUEUE_NAMES = {
   dailyRouteGen: 'daily-route-gen',
   deliveryConfirm: 'delivery-confirm',
   broadcastSend: 'broadcast-send',
+  // Added in Phase 7 of the post-audit code track:
+  endOfDayMissed: 'end-of-day-missed',
+  expireSubscriptions: 'expire-subscriptions',
+  scheduledBroadcasts: 'scheduled-broadcasts',
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];

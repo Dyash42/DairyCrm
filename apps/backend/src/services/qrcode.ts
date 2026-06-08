@@ -43,6 +43,35 @@ const DEFAULTS: Required<QrOptions> = {
 };
 
 /**
+ * Build a versioned QR payload — encodes both the customer code AND the
+ * current QR version number so by-code lookup can detect an old QR
+ * being scanned after regeneration.
+ *
+ * Format: `JHR-100455:v3` — version starts at 1 on initial QR creation
+ * and increments on every regenerate. The scanner endpoint refuses to
+ * match if the embedded version is older than the currently-active row.
+ */
+export function buildVersionedQrPayload(customerCode: string, version: number): string {
+  return `${customerCode}:v${version}`;
+}
+
+/**
+ * Parse a scanned payload back into (code, version). Returns null if
+ * the input doesn't look like a versioned payload — callers should fall
+ * back to treating the whole string as a v1 customer code so legacy
+ * (pre-versioning) QR stickers keep working.
+ */
+export function parseVersionedQrPayload(
+  payload: string,
+): { customerCode: string; version: number } | null {
+  const m = /^([A-Z]+-\d+):v(\d+)$/.exec(payload.trim());
+  if (!m || !m[1] || !m[2]) return null;
+  const version = Number(m[2]);
+  if (!Number.isInteger(version) || version < 1) return null;
+  return { customerCode: m[1], version };
+}
+
+/**
  * Encode a customer code (or any short payload) as a PNG data URL.
  */
 export async function generateQrDataUrl(

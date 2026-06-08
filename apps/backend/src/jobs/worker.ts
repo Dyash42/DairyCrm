@@ -5,10 +5,13 @@
  *   npm run worker
  *
  * Schedules:
- *   - auto-resume        every  5 min — picks up due AutoResumeJob rows
- *   - renewal-reminder   every 15 min — pings customers 3 days before expiry
- *   - daily-route-gen    every 60 min — materializes today's deliveries
- *   - delivery-confirm   every 10 min — sends "delivered today" WhatsApp
+ *   - auto-resume          every  5 min — picks up due AutoResumeJob rows
+ *   - renewal-reminder     every 15 min — pings customers 3 days before expiry
+ *   - daily-route-gen      every 60 min — materializes today's deliveries
+ *   - delivery-confirm     every 10 min — sends "delivered today" WhatsApp
+ *   - scheduled-broadcasts every  5 min — fires SCHEDULED broadcasts when due
+ *   - end-of-day-missed    every 60 min — flips past-PENDING → MISSED
+ *   - expire-subscriptions every 60 min — flips ACTIVE → CANCELLED after endDate
  *
  * If REDIS_URL is unset we fall back to in-process setInterval so dev still
  * works without BullMQ/Redis. In production, REDIS_URL must be set.
@@ -21,6 +24,9 @@ import { runAutoResumeOnce } from './auto-resume';
 import { runRenewalReminderOnce } from './renewal-reminder';
 import { runDailyRouteGenOnce } from './daily-route-gen';
 import { runDeliveryConfirmOnce } from './delivery-confirm';
+import { runEndOfDayMissedOnce } from './end-of-day-missed';
+import { runExpireSubscriptionsOnce } from './expire-subscriptions';
+import { runScheduledBroadcastsOnce } from './scheduled-broadcasts';
 
 const MIN = 60 * 1000;
 const INTERVALS = {
@@ -28,6 +34,12 @@ const INTERVALS = {
   renewalReminder: 15 * MIN,
   dailyRouteGen: 60 * MIN,
   deliveryConfirm: 10 * MIN,
+  scheduledBroadcasts: 5 * MIN,
+  // These two are heavier (table-scans) so we run them only hourly.
+  // Their semantic clock is "once per day after the morning window",
+  // but checking hourly gives us a quick recovery from a missed tick.
+  endOfDayMissed: 60 * MIN,
+  expireSubscriptions: 60 * MIN,
 };
 
 async function main() {
@@ -60,6 +72,18 @@ async function main() {
     'tick', {},
     { repeat: { every: INTERVALS.deliveryConfirm }, removeOnComplete: true, removeOnFail: 50 },
   );
+  await getQueue(QUEUE_NAMES.scheduledBroadcasts).add(
+    'tick', {},
+    { repeat: { every: INTERVALS.scheduledBroadcasts }, removeOnComplete: true, removeOnFail: 50 },
+  );
+  await getQueue(QUEUE_NAMES.endOfDayMissed).add(
+    'tick', {},
+    { repeat: { every: INTERVALS.endOfDayMissed }, removeOnComplete: true, removeOnFail: 50 },
+  );
+  await getQueue(QUEUE_NAMES.expireSubscriptions).add(
+    'tick', {},
+    { repeat: { every: INTERVALS.expireSubscriptions }, removeOnComplete: true, removeOnFail: 50 },
+  );
 
   spawnWorker(QUEUE_NAMES.autoResume, async () => log('auto-resume', await runAutoResumeOnce()));
   spawnWorker(QUEUE_NAMES.renewalReminder, async () =>
@@ -70,6 +94,15 @@ async function main() {
   );
   spawnWorker(QUEUE_NAMES.deliveryConfirm, async () =>
     log('delivery-confirm', await runDeliveryConfirmOnce()),
+  );
+  spawnWorker(QUEUE_NAMES.scheduledBroadcasts, async () =>
+    log('scheduled-broadcasts', await runScheduledBroadcastsOnce()),
+  );
+  spawnWorker(QUEUE_NAMES.endOfDayMissed, async () =>
+    log('end-of-day-missed', await runEndOfDayMissedOnce()),
+  );
+  spawnWorker(QUEUE_NAMES.expireSubscriptions, async () =>
+    log('expire-subscriptions', await runExpireSubscriptionsOnce()),
   );
 
   // eslint-disable-next-line no-console
@@ -94,6 +127,12 @@ function runInIntervalMode() {
     INTERVALS.dailyRouteGen);
   setInterval(() => void runDeliveryConfirmOnce().then((r) => log('delivery-confirm', r)),
     INTERVALS.deliveryConfirm);
+  setInterval(() => void runScheduledBroadcastsOnce().then((r) => log('scheduled-broadcasts', r)),
+    INTERVALS.scheduledBroadcasts);
+  setInterval(() => void runEndOfDayMissedOnce().then((r) => log('end-of-day-missed', r)),
+    INTERVALS.endOfDayMissed);
+  setInterval(() => void runExpireSubscriptionsOnce().then((r) => log('expire-subscriptions', r)),
+    INTERVALS.expireSubscriptions);
 }
 
 function log(name: string, result: object) {

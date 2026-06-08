@@ -47,7 +47,15 @@ export interface PaymentProvider {
   /**
    * Verify a webhook callback's signature. `rawBody` MUST be the bytes
    * actually received over the wire (the provider signs the literal body,
-   * not its JSON-roundtrip). Return true on match.
+   * not its JSON-roundtrip). `timestamp` is the provider's
+   * timestamp header value (Cashfree's `x-webhook-timestamp`) — pass
+   * undefined for providers that don't use one (Razorpay doesn't). The
+   * Cashfree implementation uses this both as part of the HMAC and for
+   * replay-window enforcement.
    */
-  verifyWebhookSignature(rawBody: string, signature: string): boolean;
+  verifyWebhookSignature(
+    rawBody: string,
+    signature: string,
+    timestamp?: string,
+  ): boolean;
 }

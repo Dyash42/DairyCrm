@@ -61,9 +61,13 @@ export async function registerPaymentRoutes(app: App) {
         (req.headers['x-razorpay-signature'] as string | undefined) ??
         (req.headers['x-webhook-signature'] as string | undefined) ??
         '';
+      // Cashfree sends x-webhook-timestamp; Razorpay doesn't. Pass it
+      // through to the verifier — Cashfree HMACs over `timestamp + body`
+      // and uses it for replay-window enforcement.
+      const tsHeader = req.headers['x-webhook-timestamp'] as string | undefined;
       const rawBody = req.rawBody ?? '';
 
-      if (!provider.verifyWebhookSignature(rawBody, sigHeader)) {
+      if (!provider.verifyWebhookSignature(rawBody, sigHeader, tsHeader)) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
 
@@ -149,8 +153,12 @@ export async function registerPaymentRoutes(app: App) {
     },
   });
 
-  // Authed endpoints below
+  // Authed admin-only endpoints below. The webhook above bypasses auth
+  // by design (signature-verified). The list + manual-record routes
+  // both expose financial PII (amounts, modes, references); an executive
+  // could iterate the entire payment ledger without the role guard.
   app.addHook('onRequest', app.authenticate);
+  app.addHook('onRequest', app.requireRole('ADMIN'));
 
   app.get('/', {
     handler: async (req) => {

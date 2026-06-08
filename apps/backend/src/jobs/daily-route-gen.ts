@@ -15,6 +15,7 @@ import {
   getDeliveriesForDate,
   type ScheduleRepo,
 } from '../services/scheduling';
+import { startOfBusinessDayUTC } from '../utils/dates';
 
 function buildScheduleRepo(): ScheduleRepo {
   return {
@@ -28,6 +29,7 @@ function buildScheduleRepo(): ScheduleRepo {
         customerId: s.customerId,
         routeId: s.customer.routeId,
         litresPerDay: Number(s.litresPerDay),
+        ratePerLitre: Number(s.ratePerLitre),
         daysOfWeek: s.daysOfWeek,
         startDate: s.startDate,
         endDate: s.endDate,
@@ -80,6 +82,9 @@ export async function runDailyRouteGenOnce(today: Date = startOfTodayUTC()): Pro
         customerId: p.customerId,
         routeId: p.routeId as string,
         scheduledLitres: p.litres,
+        // Snapshot rate from subscription so historical billing is
+        // stable when admin edits the Product's rate later.
+        ratePerLitre: p.ratePerLitre,
         scheduledFor: p.date,
         status: DeliveryStatus.PENDING,
       })),
@@ -93,7 +98,5 @@ export async function runDailyRouteGenOnce(today: Date = startOfTodayUTC()): Pro
   };
 }
 
-function startOfTodayUTC(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-}
+// "today" anchored to the business TZ. See utils/dates.ts.
+const startOfTodayUTC = startOfBusinessDayUTC;

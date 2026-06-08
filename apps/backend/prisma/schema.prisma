@@ -398,6 +398,14 @@ model Delivery {
   executive       Executive?     @relation(fields: [executiveId], references: [id], onDelete: SetNull)
   scheduledLitres Decimal        @db.Decimal(6, 2)
   deliveredLitres Decimal?       @db.Decimal(6, 2)
+  /// Per-delivery rate snapshot. Captured at materialization time from
+  /// the subscription's ratePerLitre, so billing for a past month is
+  /// stable even if admin edits rates today. The previous billing code
+  /// re-read the customer's CURRENT subscription rate and retroactively
+  /// rewrote last month's invoices — customers disputed bills they
+  /// already paid. Nullable for back-compat with rows created before
+  /// the migration.
+  ratePerLitre    Decimal?       @db.Decimal(8, 2)
   status          DeliveryStatus @default(PENDING)
   scheduledFor    DateTime
   scannedAt       DateTime?

@@ -16,9 +16,11 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
+import pino from 'pino';
 import { ZodError } from 'zod';
 
 import { loadConfig } from './config';
+import { buildLogStreams } from './log-streams';
 import type { App } from './types';
 import { registerAuthRoutes, registerAuthDecorators } from './modules/auth';
 import { registerCustomerRoutes } from './modules/customers';
@@ -34,6 +36,7 @@ import { registerBillingRoutes } from './modules/billing';
 import { registerSettingsRoutes } from './modules/settings';
 import { registerProductRoutes } from './modules/products';
 import { registerPaymentRoutes } from './modules/payments';
+import { registerAdminLogRoutes } from './modules/admin-log';
 
 export interface BuildOptions {
   /** Skip rate limit in tests (it pollutes 200 fast-fire requests). */
@@ -63,12 +66,24 @@ export async function buildServer(opts: BuildOptions = {}): Promise<App> {
     '*.otp',
   ];
 
+  // Multiplex log lines to BOTH stdout AND apps/backend/logs/server.log.
+  // The file persists across restarts so we can grep for what happened
+  // during a broken flow even after the dev terminal scrolled away.
+  // Returns undefined in tests so vitest doesn't accumulate a log file.
+  const streams = buildLogStreams();
+  const level = config.NODE_ENV === 'production' ? 'info' : 'info';
+  const loggerOptions = {
+    level,
+    redact: { paths: redactPaths, censor: '[redacted]' },
+  };
   const app = Fastify({
-    logger:
-      config.NODE_ENV === 'production'
-        ? { level: 'info', redact: { paths: redactPaths, censor: '[redacted]' } }
-        : { level: 'warn', redact: { paths: redactPaths, censor: '[redacted]' } },
-    disableRequestLogging: true,
+    logger: streams
+      ? pino(loggerOptions, pino.multistream(streams))
+      : loggerOptions,
+    // We DO want per-request logging now — that's the whole point of
+    // capturing logs for debugging. Each request gets one access-log
+    // line with method + url + status + responseTime.
+    disableRequestLogging: false,
     trustProxy: true,
   });
 
@@ -125,6 +140,7 @@ export async function buildServer(opts: BuildOptions = {}): Promise<App> {
   await app.register(registerSettingsRoutes, { prefix: '/settings' });
   await app.register(registerProductRoutes, { prefix: '/products' });
   await app.register(registerPaymentRoutes, { prefix: '/payments' });
+  await app.register(registerAdminLogRoutes, { prefix: '/admin-log' });
 
   return app;
 }

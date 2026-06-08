@@ -595,6 +595,32 @@ export function botReset(from: string) {
   });
 }
 
+// ----------------------- Admin observability log -----------------------
+/**
+ * Fire-and-forget log of a client-side event to the backend. Surfaces
+ * page navigations + errors in the backend log file (server.log) so a
+ * developer (or future agent) can read ONE timestamped feed to debug.
+ *
+ * NEVER throws — log capture must never break the UI. A 401, network
+ * timeout, or rate-limit is swallowed silently.
+ */
+export function logAdminEvent(
+  kind: 'page-view' | 'page-error' | 'page-info',
+  path: string,
+  opts: { message?: string; meta?: Record<string, unknown> } = {},
+): void {
+  // No-op when not logged in — backend rejects unauthenticated logs.
+  if (!getToken()) return;
+  // Use sendBeacon when available (survives page unload) — but it
+  // doesn't carry the Authorization header. Fall back to fetch().
+  void apiFetch('/admin-log/event', {
+    method: 'POST',
+    body: { kind, path, ...opts },
+  }).catch(() => {
+    // intentionally ignored
+  });
+}
+
 /** Download all customers as a CSV — opens in browser with token in URL.
  *  Since the endpoint is authed, we fetch then make an object URL. */
 export async function downloadCustomersCsv(filename = 'customers.csv'): Promise<void> {

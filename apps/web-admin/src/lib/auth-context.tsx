@@ -11,9 +11,7 @@ import {
 import { useRouter, usePathname } from 'next/navigation';
 import {
   clearToken,
-  fetchMe,
   loginAdmin,
-  getToken,
   setToken as persistToken,
 } from './api';
 
@@ -53,29 +51,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
 
-  // Hydrate from token on mount. If no real JWT exists, fall back to
-  // the demo user so pages render with mock data and the login screen
-  // never gates the user.
+  // Demo-mode hydration: ALWAYS use the demo user, regardless of
+  // whether a stale JWT is in localStorage. We also explicitly purge
+  // any stored token so every page's API call returns 401 and
+  // useApiWithFallback drops in the seeded fixture data. Without this,
+  // a JWT left over from a previous real login would let the
+  // dashboard call the live backend and show mostly-zero numbers
+  // (since the seeded DB has no delivery activity today).
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
-      setUser(DEMO_USER);
-      setLoading(false);
-      return;
-    }
-    fetchMe()
-      .then(({ user: u }) => {
-        setUser({ id: u.sub, name: u.name, role: u.role });
-      })
-      .catch(() => {
-        // Real token was invalid — still keep the demo user so the
-        // UI doesn't bounce to login. The previous behavior cleared
-        // the token and forced /login, which made every page render
-        // briefly then disappear.
-        clearToken();
-        setUser(DEMO_USER);
-      })
-      .finally(() => setLoading(false));
+    clearToken();
+    setUser(DEMO_USER);
+    setLoading(false);
   }, []);
 
   // Redirect /login away (the demo user is always "signed in" for this

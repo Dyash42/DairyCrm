@@ -13,7 +13,10 @@ enum RouteDataSource { loading, live, demo, error }
 /// design state. In production the screen always loads live data.
 enum DemoMode { off, defaultMorning, midRoute, routeComplete, offline }
 
-final demoModeProvider = StateProvider<DemoMode>((_) => DemoMode.off);
+// Demo default: `defaultMorning` so the route screen shows seeded
+// data immediately when the app boots without a JWT. Set back to
+// `DemoMode.off` once real login is restored.
+final demoModeProvider = StateProvider<DemoMode>((_) => DemoMode.defaultMorning);
 
 /// Whether the app is offline (banner + queue counter).
 final isOfflineProvider = StateProvider<bool>((_) => false);
@@ -53,7 +56,18 @@ class RouteSnapshot {
 /// triggers a reload, and exposes markDelivered/markSkipped for the UI.
 class RouteNotifier extends StateNotifier<RouteSnapshot> {
   RouteNotifier(this._ref)
-      : super(RouteSnapshot(summary: _emptySummary(), source: RouteDataSource.loading)) {
+      : super(RouteSnapshot(
+          // Seed initial state from the current demoMode so apps that
+          // boot with a non-off mode (e.g. login-bypass demo build)
+          // show real seeded data immediately instead of an empty
+          // loading shell.
+          summary: _ref.read(demoModeProvider) == DemoMode.off
+              ? _emptySummary()
+              : _demoSummary(_ref.read(demoModeProvider)),
+          source: _ref.read(demoModeProvider) == DemoMode.off
+              ? RouteDataSource.loading
+              : RouteDataSource.demo,
+        )) {
     _ref.listen<AuthState>(authStateProvider, (_, next) {
       if (next is AuthSignedIn) {
         refresh();

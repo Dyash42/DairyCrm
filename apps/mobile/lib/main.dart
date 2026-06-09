@@ -26,16 +26,39 @@ class JharanaiApp extends StatelessWidget {
   }
 }
 
-/// Watches auth state and routes to the right screen. Also boots the
-/// sync engine so it starts listening to connectivity from app launch.
+/// DEMO-MODE auth gate.
+///
+/// The login + OTP flow is bypassed for now so the app boots straight
+/// into Today's Route. The route_provider already does cache + API +
+/// fallback, so when the unauthenticated GET /deliveries/today returns
+/// 401 the screen quietly falls back to the seeded mock data and the
+/// UI keeps working. The dev drawer (swipe from the left edge) lets
+/// you switch between morning / mid-route / route-complete demo modes.
+///
+/// To restore real OTP login, swap _AuthGate back to its previous
+/// implementation (the LoginScreen widget + AuthStateProvider are
+/// still in the codebase, just unreferenced from main).
 class _AuthGate extends ConsumerWidget {
   const _AuthGate();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Touch the sync engine so it spins up on app launch.
+    // Touch the sync engine so it spins up on app launch (offline
+    // queue ready even if we end up with mock data).
     ref.watch(syncEngineProvider);
+    return const TodaysRouteScreen();
+  }
+}
 
+// LoginScreen + AuthStateProvider stay imported so they don't break
+// the rest of the app — restoring real auth is a one-line change.
+// ignore: unused_element
+class _RealAuthGate extends ConsumerWidget {
+  const _RealAuthGate();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(syncEngineProvider);
     final state = ref.watch(authStateProvider);
     if (state is AuthUnknown) {
       return const _BootSplash();

@@ -34,16 +34,32 @@ const AuthCtx = createContext<AuthState | null>(null);
 
 const PUBLIC_PATHS = ['/login'];
 
+/**
+ * DEMO USER injected when no real JWT exists. Pages keep calling the
+ * backend; each one falls back to mock data via useApiWithFallback
+ * (which now treats 401 like any other error in demo mode rather
+ * than redirecting to /login). Restore real auth by deleting the
+ * DEMO_USER fallback below + the demo branch in the redirect effect.
+ */
+const DEMO_USER: User = {
+  id: 'demo-admin',
+  name: 'Anil Das (demo)',
+  role: 'ADMIN',
+};
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
 
-  // Hydrate from token on mount
+  // Hydrate from token on mount. If no real JWT exists, fall back to
+  // the demo user so pages render with mock data and the login screen
+  // never gates the user.
   useEffect(() => {
     const token = getToken();
     if (!token) {
+      setUser(DEMO_USER);
       setLoading(false);
       return;
     }
@@ -52,17 +68,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser({ id: u.sub, name: u.name, role: u.role });
       })
       .catch(() => {
+        // Real token was invalid — still keep the demo user so the
+        // UI doesn't bounce to login. The previous behavior cleared
+        // the token and forced /login, which made every page render
+        // briefly then disappear.
         clearToken();
-        setUser(null);
+        setUser(DEMO_USER);
       })
       .finally(() => setLoading(false));
   }, []);
 
-  // Redirect unauthenticated users to /login
+  // Redirect /login away (the demo user is always "signed in" for this
+  // build). Real flow can come back by switching `DEMO_USER` to null in
+  // the no-token branch above.
   useEffect(() => {
     if (loading) return;
     const isPublic = PUBLIC_PATHS.includes(pathname);
-    if (!user && !isPublic) router.replace('/login');
     if (user && isPublic) router.replace('/');
   }, [user, loading, pathname, router]);
 

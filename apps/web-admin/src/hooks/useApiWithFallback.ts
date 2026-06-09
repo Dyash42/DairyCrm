@@ -72,11 +72,14 @@ export function useApiWithFallback<TApi, T>(
       })
       .catch((err: Error) => {
         if (cancelled) return;
+        // DEMO MODE: 401 just means the backend is reachable but our
+        // demo user doesn't have a real JWT. Treat it as "infra
+        // unreachable" so we render mock data with the demo-data pill,
+        // instead of bouncing to /login mid-render. To restore real
+        // auth, change this branch back to router.replace('/login').
         if (err instanceof ApiError && err.status === 401) {
-          // Token expired or never valid. Don't show fake data; route to login.
-          router.replace('/login');
           setData(fallback);
-          setSource('error');
+          setSource('mock');
           setError(err);
           return;
         }

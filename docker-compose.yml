@@ -1,0 +1,70 @@
+# Local / single-host production-like stack: Postgres + Redis + API + worker.
+#
+#   docker compose up --build
+#
+# Set real secrets in a `.env` file next to this compose file (compose reads it
+# automatically) or export them in your shell. Payment/Meta/SMS creds are
+# optional — without them the app runs on stubs (see docs/DEPLOYMENT.md).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jharanai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jharanai}
+      POSTGRES_DB: jharanai
+    ports: ['5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U jharanai']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment: &backend_env
+      NODE_ENV: production
+      PORT: '3000'
+      DATABASE_URL: postgresql://jharanai:${POSTGRES_PASSWORD:-jharanai}@postgres:5432/jharanai
+      DIRECT_URL: postgresql://jharanai:${POSTGRES_PASSWORD:-jharanai}@postgres:5432/jharanai
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ADMIN_ORIGIN: ${ADMIN_ORIGIN:?set ADMIN_ORIGIN}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      AUTH_STATIC_OTP: ${AUTH_STATIC_OTP:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      # Payment / Meta / SMS creds (optional — stubs used when absent):
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-}
+      MESSAGING_PROVIDER: ${MESSAGING_PROVIDER:-}
+      SMS_PROVIDER: ${SMS_PROVIDER:-console}
+    # Run migrations, then start the API.
+    command: sh -c "npx prisma migrate deploy && npm run start:prod"
+    ports: ['3000:3000']
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment: *backend_env
+    command: npm run worker:prod
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      api: { condition: service_started }
+
+volumes:
+  pgdata:

@@ -61,8 +61,9 @@ interface MetaIncomingMessage {
   from: string; // E.164 phone
   id: string;
   timestamp: string; // unix seconds, as string
-  type: 'text' | 'interactive' | 'image' | 'document' | 'audio' | 'video';
+  type: 'text' | 'interactive' | 'location' | 'image' | 'document' | 'audio' | 'video';
   text?: { body: string };
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
   interactive?: {
     type: 'button_reply' | 'list_reply';
     button_reply?: { id: string; title: string };
@@ -151,5 +152,16 @@ function toInbound(m: MetaIncomingMessage): InboundMessage | null {
       return m.audio ? { kind: 'audio', from: m.from, mediaId: m.audio.id, messageId: m.id, timestamp: ts } : null;
     case 'video':
       return m.video ? { kind: 'video', from: m.from, mediaId: m.video.id, messageId: m.id, timestamp: ts } : null;
+    case 'location':
+      return m.location
+        ? {
+            kind: 'location',
+            from: m.from,
+            latitude: m.location.latitude,
+            longitude: m.location.longitude,
+            messageId: m.id,
+            timestamp: ts,
+          }
+        : null;
   }
 }

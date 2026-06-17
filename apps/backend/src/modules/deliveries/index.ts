@@ -21,10 +21,18 @@ import { getDeliveriesForDate, type ScheduleRepo } from '../../services/scheduli
 import { startOfBusinessDayUTC } from '../../utils/dates';
 
 function buildScheduleRepo(): ScheduleRepo {
+  // Per-pass holiday cache. getDeliveriesForDate calls isHoliday once per
+  // subscription; without memoization that was one holidayCalendar query PER
+  // active subscription — 500–1000 serial round-trips per materialization
+  // pass (audit PER-01). Memoize by date so it collapses to one query.
+  const holidayCache = new Map<string, { all: boolean; routes: Set<string> }>();
   return {
     async listSubscriptionsActiveOn() {
       const rows = await prisma.subscription.findMany({
-        where: { status: 'ACTIVE' },
+        // Exclude subscriptions whose customer is not ACTIVE. A cancelled (or
+        // paused) customer must never be scheduled even if a stale subscription
+        // was left ACTIVE — backstop for audit ADM-02.
+        where: { status: 'ACTIVE', customer: { status: 'ACTIVE' } },
         include: { customer: true },
       });
       return rows.map((s) => ({
@@ -49,15 +57,32 @@ function buildScheduleRepo(): ScheduleRepo {
       });
     },
     async isHoliday(date, routeId) {
-      const row = await prisma.holidayCalendar.findFirst({
-        where: {
-          date,
-          OR: [{ scope: 'ALL' }, ...(routeId ? [{ scope: routeId }] : [])],
-        },
-      });
-      return row !== null;
+      const key = date.toISOString().slice(0, 10);
+      let entry = holidayCache.get(key);
+      if (!entry) {
+        const rows = await prisma.holidayCalendar.findMany({
+          where: { date },
+          select: { scope: true },
+        });
+        const routes = new Set(rows.map((r) => r.scope));
+        entry = { all: routes.has('ALL'), routes };
+        holidayCache.set(key, entry);
+      }
+      return entry.all || (routeId != null && entry.routes.has(routeId));
     },
   };
+}
+
+/**
+ * Run the (expensive) full materialization only when today has no Delivery
+ * rows yet. The daily-route-gen cron owns generation; the read path is just a
+ * dev/empty-day fallback. Previously every GET re-scanned all active
+ * subscriptions + ran the holiday lookup, stampeding the DB during the
+ * morning login rush (audit PER-02/ARC-02).
+ */
+async function materializeIfEmpty(today: Date): Promise<void> {
+  const existing = await prisma.delivery.count({ where: { scheduledFor: today } });
+  if (existing === 0) await materializeTodaysDeliveries(today);
 }
 
 async function materializeTodaysDeliveries(today: Date) {
@@ -123,7 +148,7 @@ export async function registerDeliveryRoutes(app: App) {
   app.get('/today', {
     handler: async (req, reply) => {
       const today = startOfTodayUTC();
-      await materializeTodaysDeliveries(today);
+      await materializeIfEmpty(today);
 
       // Logged-in user — if EXECUTIVE, scope to their route; if ADMIN, return all.
       const me = req.user;
@@ -152,6 +177,8 @@ export async function registerDeliveryRoutes(app: App) {
               name: true,
               addressLine1: true,
               routeSeq: true,
+              lat: true,
+              lng: true,
             },
           },
         },
@@ -185,7 +212,7 @@ export async function registerDeliveryRoutes(app: App) {
       }
 
       const today = startOfTodayUTC();
-      await materializeTodaysDeliveries(today);
+      await materializeIfEmpty(today);
 
       // Narrow include to the fields the mobile UI actually consumes —
       // full Customer was overkill and shipped balance/email/altPhone
@@ -201,6 +228,8 @@ export async function registerDeliveryRoutes(app: App) {
               addressLine1: true,
               routeSeq: true,
               litresPerDay: true,
+              lat: true,
+              lng: true,
             },
           },
         },

@@ -4,6 +4,7 @@
 
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
+import { getPrompt } from '../prompts';
 
 export const resumeFlow: FlowHandler = {
   async matches(ctx) {
@@ -28,14 +29,12 @@ export const resumeFlow: FlowHandler = {
         ? pause.endDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
         : 'today';
       ctx.patchState({ flow: 'resume', step: 'await_choice', context: {} });
+      const p = getPrompt('resume.ask_choice.body', { endLabel });
       ctx.send({
         kind: 'buttons',
         to: phone,
-        body: `Your subscription is currently paused until ${endLabel}. Would you like to resume earlier?`,
-        buttons: [
-          { id: 'resume_tomorrow', title: 'Resume from tomorrow' },
-          { id: 'resume_cancel', title: 'Keep pause' },
-        ],
+        body: p.body,
+        buttons: p.buttons ?? [],
       });
       return;
     }
@@ -53,7 +52,7 @@ export const resumeFlow: FlowHandler = {
         variables: { date: 'tomorrow', litres_per_day: String(litres) },
       });
     } else {
-      ctx.send({ kind: 'text', to: phone, body: 'No problem, your pause stays as is.' });
+      ctx.send({ kind: 'text', to: phone, body: getPrompt('resume.decline.body').body });
     }
     ctx.patchState({ flow: null, step: null, context: {} });
   },

@@ -181,6 +181,22 @@ export async function registerPaymentRoutes(app: App) {
       if (!customer) return notFound(reply, 'Customer');
 
       const payment = await prisma.$transaction(async (tx) => {
+        // Idempotency guard (audit ADM-10/EDG-15): a double-clicked "Record
+        // payment" or a client retry would otherwise create a second PAID row
+        // and credit the customer's balance twice. Treat a same
+        // customer/amount/mode PAID payment recorded in the last 60 seconds as
+        // the same submission and return it without re-crediting.
+        const recent = await tx.payment.findFirst({
+          where: {
+            customerId: body.customerId,
+            amount: body.amount,
+            mode: body.mode,
+            status: PaymentStatus.PAID,
+            createdAt: { gte: new Date(Date.now() - 60_000) },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (recent) return recent;
         const p = await tx.payment.create({
           data: {
             customerId: body.customerId,

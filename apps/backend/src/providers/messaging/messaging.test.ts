@@ -14,6 +14,7 @@ function clearAllEnv() {
     'ALLOW_UNSIGNED_WEBHOOK',
     'DATABASE_URL',
     'JWT_SECRET',
+    'ADMIN_ORIGIN',
   ]) {
     delete process.env[k];
   }
@@ -68,16 +69,18 @@ describe('Meta webhook signature verification', () => {
 
   it('refuses unsigned webhooks in production even with ALLOW_UNSIGNED_WEBHOOK=1', () => {
     // Production guardrail: the flag is dev-only. We have to satisfy the
-    // boot guards (DATABASE_URL + non-default JWT_SECRET) just to load
-    // config without exiting.
+    // boot guards (DATABASE_URL + non-default JWT_SECRET + non-default
+    // ADMIN_ORIGIN) just to load config without exiting.
     process.env.NODE_ENV = 'production';
     process.env.DATABASE_URL = 'postgresql://test';
     process.env.JWT_SECRET = 'a-real-non-default-jwt-secret-here';
+    process.env.ADMIN_ORIGIN = 'https://admin.example.com';
     process.env.ALLOW_UNSIGNED_WEBHOOK = '1';
     _resetConfigForTests();
     expect(new MetaMessagingProvider().verifyWebhookSignature('{}', undefined)).toBe(false);
     delete process.env.DATABASE_URL;
     delete process.env.JWT_SECRET;
+    delete process.env.ADMIN_ORIGIN;
     delete process.env.ALLOW_UNSIGNED_WEBHOOK;
   });
 });

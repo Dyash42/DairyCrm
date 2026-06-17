@@ -17,6 +17,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import { prisma } from '../../prisma';
+import { loadConfig } from '../../config';
 import { OTP_EXPIRY_MS, OTP_LENGTH, RATE_LIMITS } from '../../constants';
 import { getSmsProvider } from '../../providers/sms';
 import { normalizePhone } from '../../utils/phone';
@@ -51,11 +52,34 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * Verify the JWT is still backed by an ACTIVE user. A deactivated executive
+ * otherwise kept full access until their (7-day) token expired — the audit
+ * flagged this. Cached per-request so authenticate + requireRole on the same
+ * request don't double-query the DB.
+ */
+async function ensureActiveUser(req: FastifyRequest): Promise<boolean> {
+  const r = req as FastifyRequest & { _activeChecked?: boolean };
+  if (r._activeChecked) return true;
+  const u = await prisma.user.findUnique({
+    where: { id: req.user.sub },
+    select: { active: true },
+  });
+  if (u?.active === true) {
+    r._activeChecked = true;
+    return true;
+  }
+  return false;
+}
+
 export async function registerAuthDecorators(app: App) {
   app.decorate('authenticate', async function (req, reply) {
     try {
       await req.jwtVerify();
     } catch {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    if (!(await ensureActiveUser(req))) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
   });
@@ -69,6 +93,9 @@ export async function registerAuthDecorators(app: App) {
       }
       if (!roles.includes(req.user.role)) {
         return reply.status(403).send({ error: 'Forbidden' });
+      }
+      if (!(await ensureActiveUser(req))) {
+        return reply.status(401).send({ error: 'Unauthorized' });
       }
     };
   });
@@ -207,6 +234,24 @@ export async function registerAuthRoutes(app: App) {
     handler: async (req, reply) => {
       const { phone, code } = OtpVerifyBody.parse(req.body);
       const normalized = normalizePhone(phone);
+
+      // Static-pin bypass: when no real SMS provider is wired, a configured
+      // pin (AUTH_STATIC_OTP) logs the executive in without a sent OTP. Gated
+      // to registered, active executives only. Constant-time compared.
+      const staticPin = loadConfig().AUTH_STATIC_OTP;
+      if (staticPin && safeEqual(staticPin, code)) {
+        const u = await prisma.user.findUnique({ where: { phone: normalized } });
+        if (!u || u.role !== 'EXECUTIVE' || !u.active) {
+          return reply.status(401).send({ error: 'Invalid credentials' });
+        }
+        const token = await reply.jwtSign({
+          sub: u.id,
+          role: 'EXECUTIVE',
+          name: u.name,
+        } as JwtPayload);
+        return { token, user: { id: u.id, name: u.name, role: u.role } };
+      }
+
       const record = otpStore.get(normalized);
       if (!record || record.expiresAt < Date.now()) {
         otpStore.delete(normalized);

@@ -45,8 +45,11 @@ class CapturingSender extends WhatsAppSender {
   }
 }
 
-/** Stub repos with toggleable customer lookup. */
-function makeRepos(knownCustomer?: { id: string; name: string; code: string }): BotRepos {
+/** Stub repos with toggleable customer lookup + payment status. */
+function makeRepos(
+  knownCustomer?: { id: string; name: string; code: string },
+  paymentStatus: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED' = 'PAID',
+): BotRepos {
   return {
     async findCustomerByPhone() {
       return knownCustomer ?? null;
@@ -59,7 +62,17 @@ function makeRepos(knownCustomer?: { id: string; name: string; code: string }): 
       };
     },
     async createPaymentLink({ amount }) {
-      return { url: `https://rzp.io/l/test-${amount}` };
+      return { url: `https://rzp.io/l/test-${amount}`, paymentId: 'pay-test' };
+    },
+    async getPaymentStatus() {
+      return paymentStatus;
+    },
+    async getRatePerLitre() {
+      return 64;
+    },
+    async saveCustomerLocation() {},
+    async createLocationToken() {
+      return { token: 'tok-test', expiresAt: new Date(Date.now() + 86_400_000) };
     },
     async activateSubscription() {
       return { subscriptionId: 'sub-test' };
@@ -221,8 +234,9 @@ describe('ConversationEngine — pause flow', () => {
 
     await engine.process(makeText(phone, 'Hi'));
     await engine.process(makeList(phone, 'pause'));
-    await engine.process(makeText(phone, '2026-06-03'));
-    await engine.process(makeText(phone, '2026-06-09'));
+    // Future dates — the flow now rejects past/inverted ranges (PRD §4).
+    await engine.process(makeText(phone, '2030-06-03'));
+    await engine.process(makeText(phone, '2030-06-09'));
     sender.outbox.length = 0;
     await engine.process(makeButton(phone, 'pause_confirm', 'Confirm pause'));
 
@@ -231,9 +245,9 @@ describe('ConversationEngine — pause flow', () => {
     );
     expect(done).toBeDefined();
     if (done?.kind === 'template') {
-      expect(done.variables?.start_date).toBe('2026-06-03');
-      expect(done.variables?.end_date).toBe('2026-06-09');
-      expect(done.variables?.resume_date).toBe('2026-06-10');
+      expect(done.variables?.start_date).toBe('2030-06-03');
+      expect(done.variables?.end_date).toBe('2030-06-09');
+      expect(done.variables?.resume_date).toBe('2030-06-10');
     }
 
     const state = await store.get(phone);
@@ -252,8 +266,8 @@ describe('ConversationEngine — pause flow', () => {
 
     await engine.process(makeText(phone, 'Hi'));
     await engine.process(makeList(phone, 'pause'));
-    await engine.process(makeText(phone, '2026-06-03'));
-    await engine.process(makeText(phone, '2026-06-09'));
+    await engine.process(makeText(phone, '2030-06-03'));
+    await engine.process(makeText(phone, '2030-06-09'));
     sender.outbox.length = 0;
     await engine.process(makeButton(phone, 'pause_cancel', 'Cancel'));
 
@@ -263,5 +277,60 @@ describe('ConversationEngine — pause flow', () => {
     expect(done).toBeUndefined();
     const state = await store.get(phone);
     expect(state?.flow).toBeNull();
+  });
+});
+
+describe('ConversationEngine — onboarding payment activation (verified)', () => {
+  async function walkToAwaitPayment(
+    engine: ConversationEngine,
+    phone: string,
+    store: InMemorySessionStore,
+  ) {
+    await store.clear(phone);
+    await engine.process(makeText(phone, 'Hi'));
+    await engine.process(makeText(phone, 'Subhransu Behera'));
+    await engine.process(makeText(phone, 'Plot 47, Berhampur'));
+    await engine.process(makeText(phone, 'a@b.c'));
+    await engine.process(makeText(phone, 'skip'));
+    await engine.process(makeText(phone, '1'));
+    await engine.process(makeText(phone, '30')); // → await_payment
+  }
+
+  it('activates once the gateway has marked the payment PAID', async () => {
+    const sender = new CapturingSender();
+    const engine = new ConversationEngine(makeRepos(undefined, 'PAID'), sender);
+    const phone = '+919000000030';
+    const store = sessionStore as unknown as InMemorySessionStore;
+    await walkToAwaitPayment(engine, phone, store);
+
+    sender.outbox.length = 0;
+    // A plain message (NOT a magic word) — activation is gated on PAID status.
+    await engine.process(makeText(phone, 'ok'));
+
+    const activated = sender.outbox.find(
+      (a) => a.kind === 'template' && a.templateName === 'subscription_activated',
+    );
+    expect(activated).toBeDefined();
+    const state = await store.get(phone);
+    expect(state?.flow).toBeNull();
+  });
+
+  it('does NOT activate while the payment is still PENDING', async () => {
+    const sender = new CapturingSender();
+    const engine = new ConversationEngine(makeRepos(undefined, 'PENDING'), sender);
+    const phone = '+919000000031';
+    const store = sessionStore as unknown as InMemorySessionStore;
+    await walkToAwaitPayment(engine, phone, store);
+
+    sender.outbox.length = 0;
+    await engine.process(makeText(phone, 'ok'));
+
+    const activated = sender.outbox.find(
+      (a) => a.kind === 'template' && a.templateName === 'subscription_activated',
+    );
+    expect(activated).toBeUndefined();
+    const state = await store.get(phone);
+    expect(state?.flow).toBe('onboarding');
+    expect(state?.step).toBe('await_payment');
   });
 });

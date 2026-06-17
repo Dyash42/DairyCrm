@@ -63,9 +63,13 @@ function priorWindow(range: Range): Window {
     from.setUTCDate(from.getUTCDate() - 7);
     return { from, to: cur.from };
   }
-  // MONTH — previous calendar month
+  // MONTH — the SAME elapsed slice of the previous month (month-to-date vs
+  // month-to-same-day), not the full prior month. Comparing a partial current
+  // month against a complete prior month made every month-over-month delta
+  // look catastrophically negative early in the month.
   const from = new Date(Date.UTC(cur.from.getUTCFullYear(), cur.from.getUTCMonth() - 1, 1));
-  return { from, to: cur.from };
+  const elapsedMs = cur.to.getTime() - cur.from.getTime();
+  return { from, to: new Date(from.getTime() + elapsedMs) };
 }
 
 /** Percent-change from prior → current, rounded to int. Returns 0 if prior is 0. */
@@ -182,13 +186,17 @@ export async function registerDashboardRoutes(app: App) {
       // shape so the UI can switch axis labels but keep the same chart.
       const series: Array<{ hour: number; litres: number; dateLabel?: string }> = [];
       if (range === 'TODAY') {
+        // Bucket by IST hour (UTC+5:30) so the chart's hour labels match the
+        // business timezone. Bucketing by UTC hour shifted every bar 5.5h
+        // earlier than when the delivery actually happened locally.
+        const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
         const hourly = new Map<number, number>();
         for (const d of deliveriesForBreakdown) {
           if (!d.scannedAt) continue;
           if (d.status !== DeliveryStatus.DELIVERED && d.status !== DeliveryStatus.PARTIAL) {
             continue;
           }
-          const h = d.scannedAt.getUTCHours();
+          const h = new Date(d.scannedAt.getTime() + IST_OFFSET_MS).getUTCHours();
           hourly.set(
             h,
             (hourly.get(h) ?? 0) + Number(d.deliveredLitres ?? d.scheduledLitres),

@@ -15,15 +15,25 @@
 
 import type { App } from '../../types';
 import { z } from 'zod';
-import { CustomerStatus, QrCodeStatus } from '@prisma/client';
+import {
+  CustomerStatus,
+  QrCodeStatus,
+  SubscriptionStatus,
+  RenewalReminderStatus,
+  DeliveryStatus,
+} from '@prisma/client';
 
 import { prisma } from '../../prisma';
 import { nextCustomerCode } from '../../services/customer-code';
 import {
   generateQrDataUrl,
+  generateQrPng,
   buildVersionedQrPayload,
   parseVersionedQrPayload,
 } from '../../services/qrcode';
+import { settings } from '../../services/settings';
+import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
+import { startOfBusinessDayUTC } from '../../utils/dates';
 import { notFound, isUniqueConstraintError } from '../../utils/http';
 import { normalizePhone } from '../../utils/phone';
 import { registerCustomerBulkRoutes } from './bulk';
@@ -31,6 +41,8 @@ import { registerCustomerBulkRoutes } from './bulk';
 const ListQuery = z.object({
   status: z.nativeEnum(CustomerStatus).optional(),
   routeId: z.string().optional(),
+  // PRD §5.2: filter by area. Case-insensitive substring on Customer.area.
+  area: z.string().trim().min(1).max(100).optional(),
   // Min length 3 — a 2-char query like '99' matched every customer
   // whose phone contains those digits. With 400-500 customers a few
   // shorthand queries dumped the whole table. Strict ≥ 3 chars.
@@ -67,6 +79,35 @@ const CreateBody = z.object({
 const PatchBody = CreateBody.partial();
 
 export async function registerCustomerRoutes(app: App) {
+  // Public, UNauthenticated QR image. Registered in its own encapsulated
+  // scope BEFORE the auth hook below so it does NOT inherit it — the WhatsApp
+  // Cloud API must be able to fetch this URL to deliver the onboarding QR
+  // (Meta rejects data: URIs). The :id is an unguessable cuid and the payload
+  // only encodes the customer code the milkman scans at the door anyway.
+  await app.register(async (pub) => {
+    pub.get('/:id/qr.png', {
+      config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+      handler: async (req, reply) => {
+        const { id } = req.params as { id: string };
+        const customer = await prisma.customer.findUnique({
+          where: { id },
+          select: { code: true },
+        });
+        if (!customer) return reply.status(404).send({ error: 'NotFound' });
+        const activeQr = await prisma.qrCode.findFirst({
+          where: { customerId: id, status: QrCodeStatus.ACTIVE },
+          orderBy: { version: 'desc' },
+        });
+        const payload = activeQr?.payload ?? customer.code;
+        const png = await generateQrPng(payload);
+        return reply
+          .header('Content-Type', 'image/png')
+          .header('Cache-Control', 'public, max-age=86400')
+          .send(png);
+      },
+    });
+  });
+
   app.addHook('onRequest', app.authenticate);
 
   // Most customer endpoints are admin-only — listing the roster, viewing
@@ -187,10 +228,11 @@ export async function registerCustomerRoutes(app: App) {
   app.get('/', {
     preHandler: adminOnly,
     handler: async (req) => {
-      const q = req.query as z.infer<typeof ListQuery>;
+      const q = ListQuery.parse(req.query);
       const where: Record<string, unknown> = {};
       if (q.status) where.status = q.status;
       if (q.routeId) where.routeId = q.routeId;
+      if (q.area) where.area = { contains: q.area, mode: 'insensitive' };
       if (q.q) {
         where.OR = [
           { name: { contains: q.q, mode: 'insensitive' } },
@@ -207,6 +249,45 @@ export async function registerCustomerRoutes(app: App) {
       });
       const nextCursor = rows.length > q.limit ? rows[q.limit]?.id : null;
       return { customers: rows.slice(0, q.limit), nextCursor };
+    },
+  });
+
+  // Save a customer's door pin (GPS captured by the delivery partner at the
+  // door, or admin correction). Any authenticated user — no adminOnly guard —
+  // so executives can capture on first delivery.
+  app.post('/:id/location', {
+    handler: async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = z
+        .object({
+          lat: z.coerce.number().min(-90).max(90),
+          lng: z.coerce.number().min(-180).max(180),
+        })
+        .parse(req.body);
+      const target = await prisma.customer.findUnique({
+        where: { id },
+        select: { id: true, routeId: true },
+      });
+      if (!target) return notFound(reply, 'Customer');
+      // IDOR guard (audit SEC-02): an EXECUTIVE may only write the pin of a
+      // customer on their OWN route — same boundary as /confirm and /skip.
+      // Without this, any executive could overwrite ANY customer's GPS (ids
+      // are returned in /deliveries/today) and misroute other milkmen.
+      // Respond 404 (not 403) so the endpoint doesn't confirm the id exists.
+      if (req.user.role === 'EXECUTIVE') {
+        const exec = await prisma.executive.findFirst({
+          where: { userId: req.user.sub },
+          select: { routeId: true },
+        });
+        if (!exec?.routeId || exec.routeId !== target.routeId) {
+          return notFound(reply, 'Customer');
+        }
+      }
+      await prisma.customer.update({
+        where: { id },
+        data: { lat: body.lat, lng: body.lng, geoUpdatedAt: new Date() },
+      });
+      return { ok: true };
     },
   });
 
@@ -393,6 +474,28 @@ export async function registerCustomerRoutes(app: App) {
       // works correctly. New mobile scanners parse both forms.
       const versionedPayload = buildVersionedQrPayload(code, 1);
       const qrCodeUrl = await generateQrDataUrl(versionedPayload);
+
+      // A single-create customer also needs an ACTIVE subscription, exactly
+      // like the bulk import and WhatsApp onboarding paths — otherwise the
+      // route materializer never schedules them and they NEVER appear on the
+      // milkman's Today's Route despite being "added". Defaults: daily cow
+      // milk for the configured subscription length. Admin can refine later.
+      const durationDays = await settings.getNumber('subscription.default_duration_days', 30);
+      const renewalLeadDays = await settings.getNumber('subscription.renewal_reminder_days_before', 3);
+      let product = await prisma.product.findFirst({ where: { code: 'COW_MILK' } });
+      if (!product) {
+        product = await prisma.product.findFirst({
+          where: { active: true },
+          orderBy: { sortOrder: 'asc' },
+        });
+      }
+      const rate = Number(product?.ratePerUnit) || DEFAULT_RATE_PER_LITRE_INR;
+      const startDate = startOfBusinessDayUTC();
+      const endDate = new Date(startDate);
+      endDate.setUTCDate(endDate.getUTCDate() + durationDays);
+      const dueDate = new Date(endDate);
+      dueDate.setUTCDate(dueDate.getUTCDate() - renewalLeadDays);
+
       try {
         const customer = await prisma.$transaction(async (tx) => {
           const c = await tx.customer.create({
@@ -407,6 +510,46 @@ export async function registerCustomerRoutes(app: App) {
               version: 1,
             },
           });
+          const sub = await tx.subscription.create({
+            data: {
+              customerId: c.id,
+              productId: product?.id ?? null,
+              sku: product?.code ?? 'COW_MILK',
+              litresPerDay: body.litresPerDay,
+              daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+              ratePerLitre: rate,
+              startDate,
+              endDate,
+              status: SubscriptionStatus.ACTIVE,
+            },
+          });
+          await tx.renewalReminder.create({
+            data: {
+              subscriptionId: sub.id,
+              customerId: c.id,
+              dueDate,
+              status: RenewalReminderStatus.PENDING,
+            },
+          });
+          // Materialization on the read path now only runs for an empty day
+          // (perf — audit PER-02), so a mid-day admin-created customer would
+          // otherwise not appear on the milkman's route until the next cron.
+          // Insert today's delivery directly when the customer has a route, so
+          // "add customer → shows on today's route" keeps working.
+          if (body.routeId) {
+            await tx.delivery.upsert({
+              where: { customerId_scheduledFor: { customerId: c.id, scheduledFor: startDate } },
+              create: {
+                customerId: c.id,
+                routeId: body.routeId,
+                scheduledLitres: body.litresPerDay,
+                ratePerLitre: rate,
+                status: DeliveryStatus.PENDING,
+                scheduledFor: startDate,
+              },
+              update: {},
+            });
+          }
           return c;
         });
         return reply.status(201).send(customer);
@@ -437,11 +580,28 @@ export async function registerCustomerRoutes(app: App) {
     preHandler: adminOnly,
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
-      const updated = await prisma.customer.update({
-        where: { id },
-        data: { status: CustomerStatus.CANCELLED },
-      }).catch(() => null);
-      if (!updated) return reply.status(404).send({ error: 'NotFound' });
+      const existing = await prisma.customer.findUnique({ where: { id }, select: { id: true } });
+      if (!existing) return reply.status(404).send({ error: 'NotFound' });
+      // Soft-cancel must also STOP deliveries. Previously this only flipped
+      // Customer.status; the scheduler reads subscription.status, so a
+      // "deleted" customer with an ACTIVE subscription kept getting milk
+      // scheduled and billed forever (audit ADM-02). Cancel their active/
+      // paused subscriptions and void pending renewal reminders atomically.
+      // (The scheduler also now excludes non-ACTIVE customers as a backstop.)
+      await prisma.$transaction(async (tx) => {
+        await tx.customer.update({ where: { id }, data: { status: CustomerStatus.CANCELLED } });
+        await tx.subscription.updateMany({
+          where: {
+            customerId: id,
+            status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAUSED] },
+          },
+          data: { status: SubscriptionStatus.CANCELLED },
+        });
+        await tx.renewalReminder.updateMany({
+          where: { customerId: id, status: RenewalReminderStatus.PENDING },
+          data: { status: RenewalReminderStatus.CANCELLED },
+        });
+      });
       return { ok: true };
     },
   });

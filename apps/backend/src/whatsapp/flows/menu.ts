@@ -5,6 +5,7 @@
 
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
+import { getPrompt } from '../prompts';
 
 export const menuFlow: FlowHandler = {
   async matches(ctx) {
@@ -30,27 +31,26 @@ export const menuFlow: FlowHandler = {
       return;
     }
 
-    // Returning customer — show menu.
+    // Returning customer — show menu. Body, list button text, section title
+    // and row labels are all DB-backed prompts (admin-editable).
     ctx.patchState({
       flow: 'menu',
       step: 'await_choice',
       context: {},
       customerId: customer.id,
     });
+    const welcome = getPrompt('menu.returning.welcome', { customerName: customer.name });
+    const buttonText = getPrompt('menu.returning.button_text').body;
+    const sectionTitle = getPrompt('menu.returning.section_title.manage').body;
     ctx.send({
       kind: 'list',
       to: phone,
-      body: `Welcome back, ${customer.name}! 👋 What would you like to do today?`,
-      buttonText: 'Choose an option',
+      body: welcome.body,
+      buttonText,
       sections: [
         {
-          title: 'Manage your subscription',
-          rows: [
-            { id: 'renew', title: 'Renew subscription' },
-            { id: 'pause', title: 'Pause deliveries' },
-            { id: 'resume', title: 'Resume' },
-            { id: 'support', title: 'Support' },
-          ],
+          title: sectionTitle,
+          rows: welcome.rows ?? [],
         },
       ],
     });

@@ -24,7 +24,17 @@ const repos: BotRepos = {
     return { id: 'c1', code: 'JHR-TEST', qrCodeUrl: 'data:,' };
   },
   async createPaymentLink() {
-    return { url: 'https://rzp.io/l/stub' };
+    return { url: 'https://rzp.io/l/stub', paymentId: 'pay-stub' };
+  },
+  async getPaymentStatus() {
+    return 'PAID';
+  },
+  async getRatePerLitre() {
+    return 64;
+  },
+  async saveCustomerLocation() {},
+  async createLocationToken() {
+    return { token: 'tok-stub', expiresAt: new Date(Date.now() + 86_400_000) };
   },
   async activateSubscription() {
     return { subscriptionId: 's1' };

@@ -38,6 +38,10 @@ function ensureLogDir(): boolean {
 export function buildLogStreams(): pino.StreamEntry[] | undefined {
   // In tests we don't want a side-effect file in the workspace.
   if (process.env.NODE_ENV === 'test') return undefined;
+  // In production, log to stdout ONLY. Container/PaaS filesystems are
+  // ephemeral or read-only, so a file gives a false sense of a durable audit
+  // trail and can fail to open; the platform aggregates stdout instead.
+  if (process.env.NODE_ENV === 'production') return undefined;
   if (!ensureLogDir()) return undefined;
   return [
     { stream: process.stdout, level: 'debug' },

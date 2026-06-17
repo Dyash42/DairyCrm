@@ -36,7 +36,10 @@ import { registerBillingRoutes } from './modules/billing';
 import { registerSettingsRoutes } from './modules/settings';
 import { registerProductRoutes } from './modules/products';
 import { registerPaymentRoutes } from './modules/payments';
+import { registerLocationRoutes } from './modules/location';
 import { registerAdminLogRoutes } from './modules/admin-log';
+import { registerBotPromptRoutes } from './modules/bot-prompts';
+import { warmBotPrompts } from './whatsapp/prompts';
 
 export interface BuildOptions {
   /** Skip rate limit in tests (it pollutes 200 fast-fire requests). */
@@ -84,12 +87,29 @@ export async function buildServer(opts: BuildOptions = {}): Promise<App> {
     // capturing logs for debugging. Each request gets one access-log
     // line with method + url + status + responseTime.
     disableRequestLogging: false,
-    trustProxy: true,
+    // Trust only the configured number of proxy hops (default 1) instead of
+    // the entire X-Forwarded-For chain. With unconditional `true`, any client
+    // could spoof XFF to get req.ip — and therefore a fresh rate-limit bucket
+    // — on every request, defeating the per-IP brute-force limits on login/OTP.
+    trustProxy: config.TRUST_PROXY,
   });
 
   // --- Plugins ---
   await app.register(cors, {
-    origin: [config.ADMIN_ORIGIN],
+    // Production: strict allowlist (the configured admin origin only).
+    // Development: also allow any localhost origin, since the Expo *web*
+    // preview runs on a different port (e.g. http://localhost:8124) and the
+    // browser enforces CORS. Native devices/emulators don't send Origin.
+    origin:
+      config.NODE_ENV === 'production'
+        ? [config.ADMIN_ORIGIN]
+        : (origin, cb) => {
+            const ok =
+              !origin ||
+              origin === config.ADMIN_ORIGIN ||
+              /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+            cb(null, ok);
+          },
     credentials: true,
   });
 
@@ -140,7 +160,15 @@ export async function buildServer(opts: BuildOptions = {}): Promise<App> {
   await app.register(registerSettingsRoutes, { prefix: '/settings' });
   await app.register(registerProductRoutes, { prefix: '/products' });
   await app.register(registerPaymentRoutes, { prefix: '/payments' });
+  await app.register(registerLocationRoutes, { prefix: '/location' });
   await app.register(registerAdminLogRoutes, { prefix: '/admin-log' });
+  await app.register(registerBotPromptRoutes, { prefix: '/bot-prompts' });
+
+  // Warm the BotPrompt cache so flow handlers can call getPrompt() synchronously.
+  // Safe to run lazily: if the table is empty (pre-seed), the cache is empty
+  // and getPrompt() will throw "not found" — caught + surfaced by the global
+  // error handler. After `npm run db:seed` the cache fills and flows resolve.
+  await warmBotPrompts();
 
   return app;
 }

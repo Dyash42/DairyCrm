@@ -1,8 +1,12 @@
 /**
  * Stub messaging provider — logs outbound actions instead of sending.
  *
- * Webhook signature verification PASSES in non-production so dev can
- * curl the webhook without computing HMAC. Production fails closed.
+ * Webhook signature verification FAILS CLOSED. It only accepts an unsigned
+ * webhook when the operator has explicitly opted in via ALLOW_UNSIGNED_WEBHOOK=1
+ * AND the environment is non-production — mirroring MetaMessagingProvider and
+ * the payment stub. Previously it accepted ANY unsigned body in any
+ * non-production env, so an internet-reachable staging box could have its
+ * conversation FSM driven by forged inbound messages (audit SEC-01/EDG-07).
  *
  * Also exposes a capture API: when a sink function is registered, every
  * send is recorded against it. Used by the admin bot tester to render
@@ -44,6 +48,10 @@ export class StubMessagingProvider implements MessagingProvider {
   }
 
   verifyWebhookSignature(): boolean {
-    return loadConfig().NODE_ENV !== 'production';
+    const cfg = loadConfig();
+    // Fail closed: never accept unsigned webhooks in production, and only in
+    // dev/staging when explicitly opted in. This matches the Meta provider's
+    // ALLOW_UNSIGNED_WEBHOOK gate so the stub can't be a softer back door.
+    return cfg.NODE_ENV !== 'production' && cfg.ALLOW_UNSIGNED_WEBHOOK === '1';
   }
 }

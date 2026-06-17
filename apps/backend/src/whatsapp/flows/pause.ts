@@ -6,6 +6,7 @@
 
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
+import { getPrompt } from '../prompts';
 
 interface PauseCtx {
   startDate?: string; // ISO date YYYY-MM-DD
@@ -29,11 +30,7 @@ export const pauseFlow: FlowHandler = {
 
     if (ctx.state.flow === 'menu') {
       ctx.patchState({ flow: 'pause', step: 'ask_start', context: {} });
-      ctx.send({
-        kind: 'text',
-        to: phone,
-        body: 'Sure. From which date should we pause your deliveries?',
-      });
+      ctx.send({ kind: 'text', to: phone, body: getPrompt('pause.ask_start').body });
       return;
     }
 
@@ -48,7 +45,16 @@ export const pauseFlow: FlowHandler = {
           ctx.send({
             kind: 'text',
             to: phone,
-            body: "Please reply with a date like 'tomorrow' or '3 Jun'.",
+            body: getPrompt('pause.ask_start.retry_invalid_date').body,
+          });
+          return;
+        }
+        // PRD §4 "System validates dates": reject a start date in the past.
+        if (date < isoDate(new Date())) {
+          ctx.send({
+            kind: 'text',
+            to: phone,
+            body: getPrompt('pause.ask_start.retry_past').body,
           });
           return;
         }
@@ -56,7 +62,7 @@ export const pauseFlow: FlowHandler = {
           step: 'ask_end',
           context: { ...slot, startDate: date } as Record<string, unknown>,
         });
-        ctx.send({ kind: 'text', to: phone, body: 'And until which date?' });
+        ctx.send({ kind: 'text', to: phone, body: getPrompt('pause.ask_end').body });
         return;
       }
 
@@ -66,24 +72,32 @@ export const pauseFlow: FlowHandler = {
           ctx.send({
             kind: 'text',
             to: phone,
-            body: "Please reply with an end date like '9 Jun'.",
+            body: getPrompt('pause.ask_end.retry_invalid_date').body,
           });
           return;
         }
         const start = slot.startDate ?? date;
+        // Reject an inverted range (end before start) — otherwise daysBetween
+        // goes negative and we'd persist a bad pause + AutoResumeJob.
+        if (date < start) {
+          ctx.send({
+            kind: 'text',
+            to: phone,
+            body: getPrompt('pause.ask_end.retry_before_start').body,
+          });
+          return;
+        }
         const days = daysBetween(start, date) + 1;
         ctx.patchState({
           step: 'confirm',
           context: { ...slot, endDate: date } as Record<string, unknown>,
         });
+        const p = getPrompt('pause.confirm.body', { start, date, days });
         ctx.send({
           kind: 'buttons',
           to: phone,
-          body: `To confirm: deliveries paused ${start} – ${date} (${days} days). No milk, no charge for these days.`,
-          buttons: [
-            { id: 'pause_confirm', title: 'Confirm pause' },
-            { id: 'pause_cancel', title: 'Cancel' },
-          ],
+          body: p.body,
+          buttons: p.buttons ?? [],
         });
         return;
       }
@@ -91,7 +105,7 @@ export const pauseFlow: FlowHandler = {
       case 'confirm': {
         const confirmed = ctx.message.kind === 'button' && ctx.message.payload === 'pause_confirm';
         if (!confirmed) {
-          ctx.send({ kind: 'text', to: phone, body: 'Pause cancelled. Anything else?' });
+          ctx.send({ kind: 'text', to: phone, body: getPrompt('pause.confirm.cancelled').body });
           ctx.patchState({ flow: null, step: null, context: {} });
           return;
         }

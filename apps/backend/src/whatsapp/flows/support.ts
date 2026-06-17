@@ -5,7 +5,7 @@
 
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
-import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
+import { getPrompt } from '../prompts';
 
 interface SupportCtx {
   kind?: 'missed' | 'other';
@@ -28,14 +28,12 @@ export const supportFlow: FlowHandler = {
 
     if (ctx.state.flow === 'menu') {
       ctx.patchState({ flow: 'support', step: 'await_kind', context: {} });
+      const p = getPrompt('support.ask_kind.body');
       ctx.send({
         kind: 'buttons',
         to: phone,
-        body: 'How can we help you today?',
-        buttons: [
-          { id: 'missed', title: 'Missed delivery' },
-          { id: 'other', title: 'Other' },
-        ],
+        body: p.body,
+        buttons: p.buttons ?? [],
       });
       return;
     }
@@ -62,33 +60,28 @@ export const supportFlow: FlowHandler = {
         ctx.send({
           kind: 'text',
           to: phone,
-          body: 'Got it — a teammate will reach out shortly.',
+          body: getPrompt('support.await_kind.handoff').body,
         });
         ctx.patchState({ flow: null, step: null, context: {} });
         return;
       }
 
       case 'await_date': {
-        // Credit one day's worth, using the customer's real rate when available.
-        const sub = ctx.state.customerId
-          ? await ctx.repos.getActiveSubscription(ctx.state.customerId)
-          : null;
-        const litres = sub?.litresPerDay ?? 1;
-        const rate = sub?.ratePerLitre ?? DEFAULT_RATE_PER_LITRE_INR;
-        const credit = Math.round(litres * rate);
+        // Log the missed-delivery report for ADMIN review — do NOT auto-credit.
+        // The old flow credited litres×rate to Customer.balance for ANY claimed
+        // date with zero verification — an unbounded self-credit fraud vector.
+        // Credits now require manual admin approval.
         if (ctx.state.customerId) {
           await ctx.repos.logSupportTicket({
             customerId: ctx.state.customerId,
             kind: 'missed_delivery',
             note: `Reported missed on ${text}`,
-            creditApplied: credit,
           });
         }
         ctx.send({
-          kind: 'template',
+          kind: 'text',
           to: phone,
-          templateName: TEMPLATES.support_credit_applied.name,
-          variables: { credit_amount: String(credit), date: text },
+          body: getPrompt('support.missed.logged', { date: text }).body,
         });
         ctx.patchState({ step: 'await_close', context: {} });
         return;
@@ -96,11 +89,12 @@ export const supportFlow: FlowHandler = {
 
       case 'await_close': {
         // Any reply closes the loop.
+        const cust = await ctx.repos.findCustomerByPhone(phone);
         ctx.send({
           kind: 'template',
           to: phone,
           templateName: TEMPLATES.support_close.name,
-          variables: { name: 'there' },
+          variables: { name: cust?.name ?? 'there' },
         });
         ctx.patchState({ flow: null, step: null, context: {} });
         return;

@@ -24,9 +24,12 @@ import { renewFlow } from './flows/renew';
 import { pauseFlow } from './flows/pause';
 import { resumeFlow } from './flows/resume';
 import { supportFlow } from './flows/support';
+import { locationFlow } from './flows/location';
 
 const FLOWS: FlowHandler[] = [
   // Order matters: the first matching flow wins.
+  // A shared WhatsApp location updates the customer's door pin from any state.
+  locationFlow,
   // Active flows take priority over the menu, so an in-progress onboarding
   // doesn't get hijacked by a new 'Hi'.
   onboardingFlow,

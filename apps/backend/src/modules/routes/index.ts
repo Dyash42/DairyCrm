@@ -120,7 +120,26 @@ export async function registerRouteRoutes(app: App) {
           message: `Reassign ${count} customers before deleting.`,
         });
       }
-      await prisma.route.delete({ where: { id } }).catch(() => null);
+      // Delivery.routeId is ON DELETE RESTRICT, so a route that ever had
+      // deliveries can't be hard-deleted. Previously the FK error was swallowed
+      // (`.catch(() => null)`) and we returned {ok:true} — a false success the
+      // admin saw, then the route reappeared on refresh (audit DAT-04). Check
+      // explicitly and surface a real 409; propagate unexpected errors.
+      const deliveries = await prisma.delivery.count({ where: { routeId: id } });
+      if (deliveries > 0) {
+        return reply.status(409).send({
+          error: 'RouteHasDeliveries',
+          message: `Route has ${deliveries} historical deliveries and cannot be deleted.`,
+        });
+      }
+      try {
+        await prisma.route.delete({ where: { id } });
+      } catch (e: unknown) {
+        if ((e as { code?: string }).code === 'P2025') {
+          return reply.status(404).send({ error: 'NotFound' });
+        }
+        throw e;
+      }
       return { ok: true };
     },
   });

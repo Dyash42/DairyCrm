@@ -18,6 +18,14 @@ const DEV_JWT_SECRET = 'dev-secret-change-me-min-16-chars-long';
 const Schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
+  /**
+   * Number of proxy hops in front of the app (load balancer / CDN). Bounds
+   * how much of the X-Forwarded-For chain we trust for `req.ip`, which the
+   * rate limiter keys on. A client could otherwise spoof XFF to get a fresh
+   * rate-limit bucket on every request and brute-force login/OTP. Set to the
+   * real hop count in production (usually 1).
+   */
+  TRUST_PROXY: z.coerce.number().int().min(0).default(1),
 
   // --- Database ---
   DATABASE_URL: z.string().min(1).optional(),
@@ -26,6 +34,23 @@ const Schema = z.object({
   // --- Auth ---
   JWT_SECRET: z.string().min(16).default(DEV_JWT_SECRET),
   JWT_EXPIRES_IN: z.string().default('7d'),
+  /**
+   * Static OTP pin accepted for executive login when no real SMS provider is
+   * wired — lets the field team log in without SMS sends. Leave UNSET in
+   * production once SMS is configured: a fixed pin is effectively a shared
+   * credential. A loud warning is logged whenever it is set.
+   */
+  AUTH_STATIC_OTP: z.string().regex(/^\d{4,8}$/).optional(),
+
+  // --- Public URL of this backend (for webhook-fetchable QR images) ---
+  /**
+   * Public base URL of THIS backend, e.g. https://api.jharanai.com. Used to
+   * build publicly-fetchable QR image URLs that the WhatsApp Cloud API can
+   * load — Meta rejects `data:` URIs, so the onboarding QR must be a hosted
+   * HTTPS link. When unset, the bot falls back to the data URL (works on the
+   * stub provider / dev, fails on real Meta sends).
+   */
+  PUBLIC_BASE_URL: z.string().url().optional(),
 
   // --- Redis ---
   REDIS_URL: z.string().optional(),
@@ -116,12 +141,29 @@ export function loadConfig(): AppConfig {
     if (parsed.data.JWT_SECRET === DEV_JWT_SECRET) {
       fatal.push('JWT_SECRET must be set to a non-default value in production');
     }
+    if (parsed.data.ADMIN_ORIGIN === 'http://localhost:3001') {
+      fatal.push('ADMIN_ORIGIN must be set to the real admin origin in production (CORS)');
+    }
     if (fatal.length > 0) {
       // eslint-disable-next-line no-console
       console.error('[config] refusing to boot in production:', fatal);
       process.exit(1);
     }
   }
+
+  // Non-fatal but loud production-hygiene warnings — surfaced at boot so a
+  // misconfiguration is visible in logs rather than discovered in an incident.
+  const warn = (m: string) => {
+    // eslint-disable-next-line no-console
+    console.warn('[config] WARNING:', m);
+  };
+  if (parsed.data.ALLOW_UNSIGNED_WEBHOOK === '1') {
+    warn('ALLOW_UNSIGNED_WEBHOOK=1 — WhatsApp webhook signatures are NOT verified. Never enable with a live Meta subscription.');
+  }
+  if (parsed.data.AUTH_STATIC_OTP) {
+    warn('AUTH_STATIC_OTP is set — a fixed OTP pin accepts executive logins. Unset it once a real SMS provider is configured.');
+  }
+
   cached = parsed.data;
   return cached;
 }

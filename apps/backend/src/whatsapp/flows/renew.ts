@@ -9,6 +9,7 @@
 
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
+import { getPrompt } from '../prompts';
 import {
   DEFAULT_RATE_PER_LITRE_INR,
   DEFAULT_SUBSCRIPTION_DAYS,
@@ -18,6 +19,8 @@ interface RenewCtx {
   litresPerDay?: number;
   daysOfWeek?: number[];
   durationDays?: number;
+  /** Local Payment row id for the issued link — used to verify payment. */
+  paymentId?: string;
 }
 
 export const renewFlow: FlowHandler = {
@@ -74,9 +77,21 @@ export const renewFlow: FlowHandler = {
         const deliveries = countDeliveries(dow, duration);
         const total = Math.round(deliveries * litres * rate);
 
+        const link = await ctx.repos.createPaymentLink({
+          customerId: ctx.state.customerId ?? '',
+          amount: total,
+          note: `Jharanai renew · ${litres}L × ${deliveries} deliveries`,
+        });
+
         ctx.patchState({
           step: 'await_payment',
-          context: { ...slot, litresPerDay: litres, daysOfWeek: dow, durationDays: duration } as Record<string, unknown>,
+          context: {
+            ...slot,
+            litresPerDay: litres,
+            daysOfWeek: dow,
+            durationDays: duration,
+            paymentId: link.paymentId,
+          } as Record<string, unknown>,
         });
 
         ctx.send({
@@ -92,31 +107,35 @@ export const renewFlow: FlowHandler = {
             total: String(total),
           },
         });
-
-        const link = await ctx.repos.createPaymentLink({
-          customerId: ctx.state.customerId ?? '',
-          amount: total,
-          note: `Jharanai renew · ${litres}L × ${deliveries} deliveries`,
-        });
         ctx.send({ kind: 'text', to: phone, body: link.url });
         return;
       }
 
       case 'await_payment': {
-        if (/paid|success|done/i.test(text) && ctx.state.customerId) {
+        // Same payment-verified gate as onboarding: activate only on a
+        // webhook-confirmed PAID payment (dev shortcut in non-prod only).
+        const status = slot.paymentId
+          ? await ctx.repos.getPaymentStatus(slot.paymentId)
+          : null;
+        const devOverride =
+          process.env.NODE_ENV !== 'production' && /paid|success|done/i.test(text);
+        if ((status === 'PAID' || devOverride) && ctx.state.customerId) {
           await ctx.repos.activateSubscription({
             customerId: ctx.state.customerId,
             litresPerDay: slot.litresPerDay ?? 1,
             daysOfWeek: slot.daysOfWeek ?? [1, 2, 3, 4, 5, 6],
             durationDays: slot.durationDays ?? 30,
           });
+          const cust = await ctx.repos.findCustomerByPhone(phone);
           ctx.send({
             kind: 'template',
             to: phone,
             templateName: TEMPLATES.renew_confirmed.name,
-            variables: { name: 'there' }, // TODO: pull from customer
+            variables: { name: cust?.name ?? 'there' },
           });
           ctx.patchState({ flow: null, step: null, context: {} });
+        } else {
+          ctx.send({ kind: 'text', to: phone, body: getPrompt('payment.not_received').body });
         }
         return;
       }

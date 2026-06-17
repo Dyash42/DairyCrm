@@ -92,6 +92,11 @@ model Customer {
   routeId      String?
   route        Route?         @relation(fields: [routeId], references: [id], onDelete: SetNull)
   routeSeq     Int? // order within route
+  /// Door location for last-mile navigation. Captured from the customer's
+  /// shared WhatsApp/map pin, or by the delivery partner on first delivery.
+  lat          Float?
+  lng          Float?
+  geoUpdatedAt DateTime?
   status       CustomerStatus @default(ACTIVE)
   litresPerDay Decimal        @default(0) @db.Decimal(6, 2)
   balance      Decimal        @default(0) @db.Decimal(10, 2)
@@ -106,9 +111,25 @@ model Customer {
   whatsappLogs     WhatsAppLog[]
   renewalReminders RenewalReminder[]
   qrCodes          QrCode[]
+  locationTokens   LocationToken[]
 
   @@index([routeId, status])
   @@index([phone])
+}
+
+/// Single-use, expiring link a customer uses to drop their home pin on a
+/// self-hosted map page (handles the "I'm not home right now" case). The
+/// token is the only thing in the URL — unguessable, scoped to one customer.
+model LocationToken {
+  id         String    @id @default(cuid())
+  token      String    @unique
+  customerId String
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([customerId])
 }
 
 // ============================================================
@@ -500,4 +521,36 @@ model WhatsAppLog {
 
   @@index([customerId])
   @@index([phone, timestamp])
+}
+
+// ============================================================
+// Bot prompts — editable session-window strings the bot speaks.
+// NOT Meta-approved templates (those live in code under whatsapp/templates.ts);
+// these are inline session-window messages that admins can edit live.
+// ============================================================
+
+model BotPrompt {
+  /// Stable code-side reference, e.g. "onboarding.ask_address".
+  key       String   @id
+  /// Owning flow — onboarding | menu | pause | resume | support.
+  flow      String
+  /// Human label shown in the admin list, e.g. "Onboarding · Ask delivery address".
+  label     String
+  /// OutboundAction kind — text | buttons | list.
+  kind      String
+  /// Body text. May contain ${var} placeholders.
+  body      String
+  /// For kind=buttons. Array of { id (locked), title (editable) }.
+  buttons   Json?
+  /// For kind=list. Array of { id (locked), title, description? }.
+  rows      Json?
+  /// Variable names available for interpolation, e.g. ["firstName"].
+  /// Documented in the editor UI; not enforced at write time.
+  variables Json
+  /// Sort key for the editor list — group by flow then this.
+  sortOrder Int      @default(0)
+  /// Editor-only note (e.g. "shown on parse error, stays on same step").
+  notes     String?
+  updatedAt DateTime @updatedAt
+  updatedBy String?
 }

@@ -27,8 +27,8 @@ export async function initObservability(): Promise<void> {
   }
 
   try {
-    // Dynamic import: package may not be installed in dev.
-    // @ts-expect-error optional dep
+    // Dynamic import so the app still boots if the package is ever absent.
+    // @ts-ignore optional dep — resolved at runtime
     const Sentry = await import('@sentry/node');
     Sentry.init({
       dsn,
@@ -49,7 +49,7 @@ export async function initObservability(): Promise<void> {
 /** Report an error if Sentry is up; otherwise no-op. Safe to call anywhere. */
 export async function captureException(err: unknown, context?: Record<string, unknown>): Promise<void> {
   try {
-    // @ts-expect-error optional dep
+    // @ts-ignore optional dep — resolved at runtime
     const Sentry = await import('@sentry/node').catch(() => null);
     if (Sentry && typeof Sentry.captureException === 'function') {
       Sentry.captureException(err, { extra: context });

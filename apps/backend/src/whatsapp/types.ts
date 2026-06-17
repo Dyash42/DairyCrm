@@ -12,6 +12,7 @@ export type InboundMessage =
   | { kind: 'text'; from: string; text: string; messageId: string; timestamp: number }
   | { kind: 'button'; from: string; payload: string; title: string; messageId: string; timestamp: number }
   | { kind: 'list'; from: string; rowId: string; title: string; messageId: string; timestamp: number }
+  | { kind: 'location'; from: string; latitude: number; longitude: number; messageId: string; timestamp: number }
   | { kind: 'image' | 'document' | 'audio' | 'video'; from: string; mediaId: string; messageId: string; timestamp: number };
 
 // ---------- Outbound (what we send) ----------
@@ -85,11 +86,31 @@ export interface BotRepos {
     altPhone?: string;
     litresPerDay: number;
   }): Promise<{ id: string; code: string; qrCodeUrl: string }>;
+  /**
+   * Create a hosted payment link AND persist a PENDING Payment row keyed by
+   * the gateway reference, so the signed webhook can reconcile it (flip to
+   * PAID + credit balance). Returns the local Payment id so the flow can
+   * later check whether the customer has actually paid before activating.
+   */
   createPaymentLink(input: {
     customerId: string;
     amount: number;
     note: string;
-  }): Promise<{ url: string }>;
+  }): Promise<{ url: string; paymentId: string }>;
+  /** Current status of a Payment row, or null if it doesn't exist. */
+  getPaymentStatus(
+    paymentId: string,
+  ): Promise<'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED' | null>;
+  /** Resolve the live per-litre rate (Product COW_MILK → settings → default). */
+  getRatePerLitre(): Promise<number>;
+  /** Save the customer's door location (lat/lng) for navigation. */
+  saveCustomerLocation(input: {
+    customerId: string;
+    lat: number;
+    lng: number;
+  }): Promise<void>;
+  /** Mint a single-use, expiring token for the "drop your home pin" page. */
+  createLocationToken(customerId: string): Promise<{ token: string; expiresAt: Date }>;
   activateSubscription(input: {
     customerId: string;
     litresPerDay: number;

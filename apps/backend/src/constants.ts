@@ -27,6 +27,10 @@ export const DEFAULT_SUBSCRIPTION_DAYS = 30;
 /** Days before subscription end we send the renewal reminder. */
 export const RENEWAL_REMINDER_DAYS_BEFORE = 3;
 
+// ---------- Location / navigation ----------
+/** How long a customer's "drop your home pin" link stays valid. */
+export const LOCATION_TOKEN_TTL_DAYS = 7;
+
 // ---------- WhatsApp / messaging ----------
 /** PRD §8 — utility category rate per message outside the service window. */
 export const UTILITY_MESSAGE_COST_INR = 0.115;

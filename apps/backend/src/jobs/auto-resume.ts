@@ -22,6 +22,7 @@ import { prisma } from '../prisma';
 import { sender } from '../whatsapp/sender';
 import { TEMPLATES } from '../whatsapp/templates';
 import { captureException } from '../observability';
+import { startOfBusinessDayUTC } from '../utils/dates';
 
 export async function runAutoResumeOnce(now: Date = new Date()): Promise<{
   picked: number;
@@ -53,6 +54,21 @@ export async function runAutoResumeOnce(now: Date = new Date()): Promise<{
       data: { status: AutoResumeStatus.RESUMED, resumedAt: new Date() },
     });
     if (claim.count === 0) continue;
+
+    // Guard: if the subscription's own endDate already passed while it was
+    // paused, do NOT resurrect it to ACTIVE (that would schedule deliveries
+    // for an expired, unpaid subscription). Cancel it instead and skip the
+    // resume reminder — the customer must renew.
+    const sub = job.pauseRecord.subscription;
+    if (sub.endDate && sub.endDate < startOfBusinessDayUTC(now)) {
+      await prisma.subscription
+        .updateMany({
+          where: { id: sub.id, status: SubscriptionStatus.PAUSED },
+          data: { status: SubscriptionStatus.CANCELLED },
+        })
+        .catch(() => undefined);
+      continue;
+    }
 
     try {
       await prisma.$transaction(async (tx) => {

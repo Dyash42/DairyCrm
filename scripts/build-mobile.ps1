@@ -49,12 +49,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path "$PSScriptRoot\.."
-$mobile   = Join-Path $repoRoot "apps\mobile"
+# Flutter is preserved as the "Plan B" fallback app. The primary mobile app
+# (apps/mobile) is now React Native / Expo — build that with `npx expo` instead.
+$mobile   = Join-Path $repoRoot "apps\mobile-flutter-plan-b"
 $buildMode = if ($Release) { "release" } else { "debug" }
 $image    = "ghcr.io/cirruslabs/flutter:3.24.5"
 
 if (-not (Test-Path $mobile)) {
-    Write-Error "apps\mobile directory not found at $mobile"
+    Write-Error "apps\mobile-flutter-plan-b directory not found at $mobile"
     exit 1
 }
 

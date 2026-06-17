@@ -7,12 +7,13 @@ WhatsApp-first dairy CRM & Sales Management platform for Jharanai
 
 ```
 apps/
-  web-admin/    Next.js 14 admin console (Ops team)
-  mobile/       Flutter app for milkmen (QR scan + offline delivery)
-  backend/      NestJS + Prisma API (shared by WhatsApp bot, web, mobile)
+  web-admin/             Next.js 14 admin console (Ops team)
+  mobile/                React Native + Expo app for milkmen (QR scan + offline delivery)
+  mobile-flutter-plan-b/ Original Flutter app — preserved fallback ("Plan B")
+  backend/               Fastify + Prisma API (shared by WhatsApp bot, web, mobile)
 packages/
-  shared/       Cross-app TypeScript types + design tokens
-docs/           Product spec, SOP, design PDFs
+  shared/                Cross-app TypeScript types + design tokens
+docs/                    Product spec, SOP, design PDFs, migration report
 ```
 
 ## Three surfaces, one backend
@@ -20,7 +21,7 @@ docs/           Product spec, SOP, design PDFs
 | Surface | Persona | Tech |
 | --- | --- | --- |
 | WhatsApp bot | Customer | Meta Cloud API + NestJS module |
-| Mobile app | Sales Executive (milkman) | Flutter (offline-first) |
+| Mobile app | Sales Executive (milkman) | React Native + Expo (offline-first); Flutter fallback in `apps/mobile-flutter-plan-b` |
 | Web admin | Ops admin | Next.js 14 + Tailwind |
 
 ## Quick start

@@ -33,16 +33,25 @@ yarn-error.log*
 coverage
 .nyc_output
 
-# flutter
-apps/mobile/build
-apps/mobile/.dart_tool
-apps/mobile/.flutter-plugins
-apps/mobile/.flutter-plugins-dependencies
-apps/mobile/.packages
-apps/mobile/.pub-cache
-apps/mobile/.pub
+# flutter (Plan B — preserved fallback app)
+apps/mobile-flutter-plan-b/build
+apps/mobile-flutter-plan-b/.dart_tool
+apps/mobile-flutter-plan-b/.flutter-plugins
+apps/mobile-flutter-plan-b/.flutter-plugins-dependencies
+apps/mobile-flutter-plan-b/.packages
+apps/mobile-flutter-plan-b/.pub-cache
+apps/mobile-flutter-plan-b/.pub
+apps/mobile-flutter-plan-b/ios/Pods
+apps/mobile-flutter-plan-b/ios/.symlinks
+apps/mobile-flutter-plan-b/android/.gradle
+
+# expo / react-native (apps/mobile — primary)
+apps/mobile/.expo
+apps/mobile/dist
+apps/mobile/web-build
+apps/mobile/.expo-shared
+*.orig.*
 apps/mobile/ios/Pods
-apps/mobile/ios/.symlinks
 apps/mobile/android/.gradle
 
 # prisma

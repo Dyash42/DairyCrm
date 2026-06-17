@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Jharanai Delivery",
+    "slug": "jharanai-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "jharanai",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F4F6F8",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jharanai.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Jharanai uses the camera to scan each customer's QR code when you deliver their milk."
+      }
+    },
+    "android": {
+      "package": "com.jharanai.mobile",
+      "permissions": ["CAMERA", "INTERNET", "ACCESS_NETWORK_STATE"]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Jharanai uses the camera to scan each customer's QR code when you deliver their milk."
+        }
+      ],
+      "expo-secure-store",
+      "expo-sqlite",
+      "expo-font"
+    ]
+  }
+}

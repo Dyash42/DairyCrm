@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -8,11 +9,13 @@ import {
   MapPin,
   UserCog,
   Users,
+  Plus,
 } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import { StatusPill, type PillTone } from '@/components/ui/StatusPill';
 import { Avatar } from '@/components/ui/Avatar';
+import { AddCustomerModal } from '@/components/customers/AddCustomerModal';
 import { fetchRouteDetail } from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { getInitials } from '@/lib/mock-data';
@@ -29,12 +32,13 @@ export default function RouteDetailPage() {
   const router = useRouter();
   const routeId = params.id;
 
-  const { data: route, source } = useApiWithFallback(
+  const { data: route, source, reload } = useApiWithFallback(
     () => fetchRouteDetail(routeId),
     (raw) => raw,
     null as Awaited<ReturnType<typeof fetchRouteDetail>> | null,
     [routeId],
   );
+  const [addOpen, setAddOpen] = useState(false);
 
   if (!route) {
     return (
@@ -115,15 +119,28 @@ export default function RouteDetailPage() {
             title="Assigned customers"
             subtitle={`${route.customers.length} on this route`}
             action={
-              <Link href="/customers/import" className="btn-secondary">
-                Import more
-              </Link>
+              <div className="flex items-center gap-2">
+                <Link href="/customers/import" className="btn-secondary">
+                  Import more
+                </Link>
+                <button onClick={() => setAddOpen(true)} className="btn-primary">
+                  <Plus size={16} />
+                  Add customer
+                </button>
+              </div>
             }
           />
           <CardBody className="p-0">
             {route.customers.length === 0 ? (
               <div className="py-12 text-center text-text-muted">
-                No customers assigned. Use Import CSV or Add customer to start.
+                No customers on this route yet.{' '}
+                <button
+                  onClick={() => setAddOpen(true)}
+                  className="text-brand font-semibold hover:underline"
+                >
+                  Add a customer
+                </button>{' '}
+                or import a CSV to start.
               </div>
             ) : (
               <table className="data-table">
@@ -172,6 +189,18 @@ export default function RouteDetailPage() {
           </CardBody>
         </Card>
       </div>
+
+      {addOpen && (
+        <AddCustomerModal
+          defaultRouteId={route.id}
+          lockRoute
+          onClose={() => setAddOpen(false)}
+          onCreated={() => {
+            setAddOpen(false);
+            reload();
+          }}
+        />
+      )}
     </>
   );
 }

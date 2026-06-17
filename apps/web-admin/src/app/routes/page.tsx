@@ -8,8 +8,14 @@ import { Topbar } from '@/components/shell/Topbar';
 import { Card } from '@/components/ui/Card';
 import { ExecutiveSelect } from '@/components/routes/ExecutiveSelect';
 import { CompletionMini } from '@/components/routes/CompletionMini';
-import { routes as mockRoutes, executives } from '@/lib/mock-data';
-import { fetchRoutes, createRoute, ApiError } from '@/lib/api';
+import { routes as mockRoutes, executives as mockExecutives } from '@/lib/mock-data';
+import {
+  fetchRoutes,
+  fetchExecutives,
+  assignRouteExecutive,
+  createRoute,
+  ApiError,
+} from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import type { Route as DomainRoute } from '@jharanai/shared';
 
@@ -31,6 +37,24 @@ export default function RoutesPage() {
       })),
     mockRoutes,
   );
+
+  // Real executives for the assignment dropdown (was hardcoded mock data).
+  const { data: execs, reload: reloadExecs } = useApiWithFallback(
+    fetchExecutives,
+    (raw): { id: string; name: string }[] =>
+      raw.executives.map((e) => ({ id: e.id, name: e.name })),
+    mockExecutives.map((e) => ({ id: e.id, name: e.name })),
+  );
+
+  async function handleAssign(routeId: string, executiveId: string) {
+    try {
+      await assignRouteExecutive(routeId, executiveId || null);
+      reload();
+      reloadExecs();
+    } catch {
+      // Backend unreachable (demo mode) — the selection simply won't persist.
+    }
+  }
 
   const totalCustomers = routes.reduce((sum, r) => sum + r.customerCount, 0);
 
@@ -95,8 +119,9 @@ export default function RoutesPage() {
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <ExecutiveSelect
-                      executives={executives}
+                      executives={execs}
                       selectedId={r.executiveId}
+                      onChange={(id) => handleAssign(r.id, id)}
                     />
                   </td>
                   <td>

@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { RotateCcw, Send, MessageSquare } from 'lucide-react';
+import { RotateCcw, Send, MessageSquare, Pencil } from 'lucide-react';
 
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardBody } from '@/components/ui/Card';
@@ -31,6 +31,9 @@ import {
   type BotOutbound,
   type BotSendResult,
 } from '@/lib/api';
+import { PromptsTab } from './PromptsTab';
+
+type Tab = 'tester' | 'prompts';
 
 interface ChatMessage {
   id: string;
@@ -46,6 +49,7 @@ const SEED_PHONES: Array<{ label: string; phone: string }> = [
 ];
 
 export default function BotTesterPage() {
+  const [tab, setTab] = useState<Tab>('tester');
   const [phone, setPhone] = useState(SEED_PHONES[0]!.phone);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -150,6 +154,20 @@ export default function BotTesterPage() {
         subtitle="Drive the WhatsApp conversation engine — same code as production"
       />
 
+      <div className="px-8 pt-4 flex items-center gap-1 border-b border-border">
+        <TabButton active={tab === 'tester'} onClick={() => setTab('tester')} icon={<MessageSquare size={14} />}>
+          Tester
+        </TabButton>
+        <TabButton active={tab === 'prompts'} onClick={() => setTab('prompts')} icon={<Pencil size={14} />}>
+          Prompts
+        </TabButton>
+      </div>
+
+      {tab === 'prompts' ? (
+        <div className="px-8 py-6 flex-1 overflow-y-auto">
+          <PromptsTab />
+        </div>
+      ) : (
       <div className="px-8 py-6 flex-1 overflow-hidden flex flex-col max-w-4xl">
         {/* Controls */}
         <Card className="mb-4">
@@ -246,7 +264,34 @@ export default function BotTesterPage() {
           </div>
         )}
       </div>
+      )}
     </>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+        active
+          ? 'border-brand text-text-primary'
+          : 'border-transparent text-text-secondary hover:text-text-primary'
+      }`}
+    >
+      {icon}
+      {children}
+    </button>
   );
 }
 

@@ -2,14 +2,13 @@
 
 import { ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import type { Executive } from '@jharanai/shared';
 
 export function ExecutiveSelect({
   executives,
   selectedId,
   onChange,
 }: {
-  executives: Executive[];
+  executives: { id: string; name: string }[];
   selectedId?: string;
   onChange?: (id: string) => void;
 }) {

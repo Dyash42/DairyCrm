@@ -11,7 +11,8 @@ const PUBLIC_PATHS = ['/login'];
 
 export function AppFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  if (PUBLIC_PATHS.includes(pathname)) {
+  // /pin/<token> is the public customer location page — no admin shell.
+  if (PUBLIC_PATHS.includes(pathname) || pathname.startsWith('/pin')) {
     return <>{children}</>;
   }
   return <AdminShell>{children}</AdminShell>;

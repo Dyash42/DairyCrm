@@ -146,11 +146,13 @@ export function fetchRouteDetail(id: string) {
 export function fetchCustomers(params: {
   q?: string;
   status?: string;
+  area?: string;
   limit?: number;
 } = {}) {
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
   if (params.status) qs.set('status', params.status);
+  if (params.area) qs.set('area', params.area);
   if (params.limit) qs.set('limit', String(params.limit));
   const q = qs.toString();
   return apiFetch<{ customers: CustomerPayload[]; nextCursor: string | null }>(
@@ -391,6 +393,55 @@ export interface SettingRow {
 
 export function fetchSettings() {
   return apiFetch<{ groups: Record<string, SettingRow[]> }>('/settings');
+}
+
+// ---------- Bot prompts ----------
+
+export type BotPromptKind = 'text' | 'buttons' | 'list';
+
+export interface BotPromptButton {
+  id: string;
+  title: string;
+}
+
+export interface BotPromptRow {
+  id: string;
+  title: string;
+  description?: string;
+}
+
+export interface BotPromptRecord {
+  key: string;
+  flow: string;
+  label: string;
+  kind: BotPromptKind;
+  body: string;
+  buttons: BotPromptButton[] | null;
+  rows: BotPromptRow[] | null;
+  variables: string[];
+  sortOrder: number;
+  notes: string | null;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export function fetchBotPrompts() {
+  return apiFetch<{ prompts: BotPromptRecord[] }>('/bot-prompts');
+}
+
+export function updateBotPrompt(
+  key: string,
+  patch: {
+    body?: string;
+    buttons?: BotPromptButton[];
+    rows?: BotPromptRow[];
+    notes?: string | null;
+  },
+) {
+  return apiFetch<BotPromptRecord>(`/bot-prompts/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    body: patch,
+  });
 }
 
 export function updateSetting(key: string, value: unknown) {

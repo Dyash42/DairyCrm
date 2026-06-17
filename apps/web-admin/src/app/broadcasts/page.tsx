@@ -14,10 +14,15 @@ import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import { StatusPill, type PillTone } from '@/components/ui/StatusPill';
 import {
   broadcasts as mockBroadcasts,
-  routes,
+  routes as mockRoutes,
   type BroadcastStatus,
 } from '@/lib/mock-data';
-import { fetchBroadcasts, createBroadcast, sendBroadcast } from '@/lib/api';
+import {
+  fetchBroadcasts,
+  fetchRoutes,
+  createBroadcast,
+  sendBroadcast,
+} from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { cn } from '@/lib/cn';
 
@@ -34,7 +39,10 @@ type TargetMode = 'ALL' | 'ROUTES';
 export default function BroadcastsPage() {
   const [message, setMessage] = useState('');
   const [target, setTarget] = useState<TargetMode>('ROUTES');
-  const [selectedRoutes, setSelectedRoutes] = useState<string[]>(['r1', 'r4']);
+  // Start empty — the admin picks REAL routes. (Previously defaulted to the
+  // mock ids 'r1'/'r4', which against the live backend resolved to 0
+  // recipients or a FK error that the catch below silently swallowed.)
+  const [selectedRoutes, setSelectedRoutes] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   const { data: broadcasts, reload } = useApiWithFallback(
@@ -53,6 +61,18 @@ export default function BroadcastsPage() {
         failedCount: b.failedCount,
       })),
     mockBroadcasts,
+  );
+
+  // Real routes for the picker / recipient count / cost estimate.
+  const { data: liveRoutes } = useApiWithFallback(
+    fetchRoutes,
+    (raw): { id: string; name: string; customerCount: number }[] =>
+      raw.routes.map((r) => ({
+        id: r.id,
+        name: r.name,
+        customerCount: r.customerCount,
+      })),
+    mockRoutes.map((r) => ({ id: r.id, name: r.name, customerCount: r.customerCount })),
   );
 
   async function onSendNow() {
@@ -76,12 +96,12 @@ export default function BroadcastsPage() {
 
   const recipientCount = useMemo(() => {
     if (target === 'ALL') {
-      return routes.reduce((sum, r) => sum + r.customerCount, 0);
+      return liveRoutes.reduce((sum, r) => sum + r.customerCount, 0);
     }
-    return routes
+    return liveRoutes
       .filter((r) => selectedRoutes.includes(r.id))
       .reduce((sum, r) => sum + r.customerCount, 0);
-  }, [target, selectedRoutes]);
+  }, [target, selectedRoutes, liveRoutes]);
 
   const charCount = message.length;
   const estCost = (recipientCount * 0.115).toFixed(2);
@@ -139,7 +159,7 @@ export default function BroadcastsPage() {
                   Routes
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {routes.map((r) => {
+                  {liveRoutes.map((r) => {
                     const selected = selectedRoutes.includes(r.id);
                     return (
                       <button

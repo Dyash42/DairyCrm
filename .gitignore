@@ -59,3 +59,10 @@ apps/backend/prisma/migrations/dev/
 
 # misc
 *.tsbuildinfo
+
+# real customer data — NEVER commit PII (names/phones/addresses) to git history.
+# Sample/real customer spreadsheets live locally only; map them into the DB via
+# the bulk-import flow (docs/CSV_IMPORT.md), don't version them.
+*.xlsx
+*.xls
+docs/CUSTOMER*.xlsx

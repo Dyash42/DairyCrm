@@ -28,7 +28,9 @@ export function ExecutiveSelect({
             : 'bg-surface border border-border text-text-primary',
         )}
       >
-        {unassigned && <option value="">Unassigned</option>}
+        {/* Always present so an admin can CLEAR an assignment, not only when
+            already unassigned (audit WEB-12). */}
+        <option value="">— Unassigned —</option>
         {executives.map((e) => (
           <option key={e.id} value={e.id}>
             {e.name}

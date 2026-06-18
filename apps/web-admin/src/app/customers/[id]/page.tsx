@@ -27,6 +27,8 @@ import {
   resumeSubscription,
   cancelSubscription,
   recordCashPayment,
+  fetchRoutes,
+  updateCustomer,
   PAYMENT_MODE_LABEL,
   type PaymentMode,
   ApiError,
@@ -38,6 +40,7 @@ const STATUS_TONE: Record<string, PillTone> = {
   ACTIVE: 'success',
   PAUSED: 'warning',
   CANCELLED: 'danger',
+  PENDING: 'muted', // ARC-08: onboarding lead, not yet paid
 };
 
 export default function CustomerDetailPage() {
@@ -173,10 +176,15 @@ export default function CustomerDetailPage() {
               </div>
             </div>
           </div>
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 w-44">
             <button onClick={() => setPayOpen(true)} className="btn-primary">
               <Banknote size={14} /> Record payment
             </button>
+            <RouteReassign
+              customerId={customerId}
+              currentRouteId={customer.route?.id ?? null}
+              onDone={reloadDetail}
+            />
           </div>
         </Card>
 
@@ -411,6 +419,75 @@ export default function CustomerDetailPage() {
 function EmptyState({ message }: { message: string }) {
   return (
     <div className="py-8 text-center text-text-muted text-sm">{message}</div>
+  );
+}
+
+/**
+ * ADM-03: reassign a customer to a different route from the detail page. The
+ * backend PATCH /customers/:id already accepted routeId; this is the missing
+ * UI. (Today's already-materialized delivery keeps its old route until the
+ * next cron — DAT-08 re-materialize is a separate, tracked item.)
+ */
+function RouteReassign({
+  customerId,
+  currentRouteId,
+  onDone,
+}: {
+  customerId: string;
+  currentRouteId: string | null;
+  onDone: () => void;
+}) {
+  const { data: routes } = useApiWithFallback(
+    fetchRoutes,
+    (raw) => raw.routes.map((r) => ({ id: r.id, name: r.name })),
+    [] as { id: string; name: string }[],
+    [],
+  );
+  const [sel, setSel] = useState<string>(currentRouteId ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const changed = sel !== '' && sel !== (currentRouteId ?? '');
+
+  async function save() {
+    if (!changed) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateCustomer(customerId, { routeId: sel });
+      onDone();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Reassign failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <select
+        value={sel}
+        onChange={(e) => setSel(e.target.value)}
+        className="input text-sm"
+        aria-label="Reassign route"
+      >
+        <option value="" disabled>
+          Select route…
+        </option>
+        {routes.map((r) => (
+          <option key={r.id} value={r.id}>
+            {r.name}
+          </option>
+        ))}
+      </select>
+      <button
+        onClick={() => void save()}
+        disabled={!changed || busy}
+        className="btn-secondary text-xs disabled:opacity-50"
+      >
+        {busy ? 'Reassigning…' : 'Reassign route'}
+      </button>
+      {err && <span className="text-xs text-danger-dark">{err}</span>}
+    </div>
   );
 }
 

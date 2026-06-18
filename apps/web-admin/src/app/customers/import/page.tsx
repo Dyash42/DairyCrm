@@ -132,8 +132,8 @@ export default function ImportPage() {
                   <code>1,2,3,4,5,6</code> (0=Sun … 6=Sat).
                 </p>
                 <p>
-                  See <Link href="/docs/csv-import" className="text-brand">the import guide</Link>
-                  &nbsp;for the full column reference.
+                  The full column reference is listed above — download the
+                  template below to start from a pre-filled example file.
                 </p>
               </div>
             </CardBody>

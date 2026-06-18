@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Droplet, Users, IndianRupee, CheckCircle2 } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
@@ -13,11 +14,28 @@ import { RouteVolumeBars } from '@/components/dashboard/RouteVolumeBars';
 import { SubscriptionsDonut } from '@/components/dashboard/SubscriptionsDonut';
 import { RouteCompletionBars } from '@/components/dashboard/RouteCompletionBars';
 import { dashboardMetrics } from '@/lib/mock-data';
-import { fetchDashboardMetrics } from '@/lib/api';
+import {
+  fetchDashboardMetrics,
+  fetchRoutes,
+  fetchSuccessMetrics,
+  fetchByRoute,
+  fetchByCustomer,
+  type SuccessMetrics,
+  type ByRouteRow,
+  type ByCustomerRow,
+} from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { formatINR } from '@jharanai/shared';
 
 type Range = 'TODAY' | 'WEEK' | 'MONTH';
+
+// Demo fallback so the §9 card renders without a backend (Path A demo).
+const MOCK_SUCCESS_METRICS: SuccessMetrics = {
+  onboardingCompletion: { rate: 88, completed: 412, pendingLeads: 56, targetPct: 85 },
+  deliveryConfirmation: { rate: 97, delivered: 11640, scheduled: 12000, windowDays: 30, targetPct: 98 },
+  renewal: { rate: 82, renewed: 180, lapsed: 39, targetPct: 80 },
+  totalCustomers: 468,
+};
 
 /**
  * Format today's date the way the dashboard topbar expects. The
@@ -34,6 +52,7 @@ function todayLabel(): string {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [range, setRange] = useState<Range>('TODAY');
   const { data: m, source } = useApiWithFallback(
     () => fetchDashboardMetrics(range),
@@ -48,7 +67,35 @@ export default function DashboardPage() {
     .sort((a, b) => b.completionPct - a.completionPct)
     .map((r) => ({ routeName: r.routeName, pct: r.completionPct }));
 
-  const unassignedRoute = m.byRoute.find((r) => r.completionPct === 0);
+  // The "no executive assigned" alert must reflect REAL assignment, not a 0%
+  // completion (which just means deliveries haven't started yet) — audit WEB-07.
+  const { data: routes } = useApiWithFallback(
+    fetchRoutes,
+    (raw) => raw.routes.map((r) => ({ name: r.name, hasExec: r.executive != null })),
+    [] as { name: string; hasExec: boolean }[],
+    [],
+  );
+  const unassignedRoute = routes.find((r) => !r.hasExec);
+
+  // PRD §9 success metrics + §7.4 by-route + §7.5 by-customer analytics.
+  const { data: metrics } = useApiWithFallback(
+    fetchSuccessMetrics,
+    (raw) => raw,
+    MOCK_SUCCESS_METRICS,
+    [],
+  );
+  const { data: byRoute } = useApiWithFallback(
+    () => fetchByRoute(range),
+    (raw) => raw.routes,
+    [] as ByRouteRow[],
+    [range],
+  );
+  const { data: byCustomer } = useApiWithFallback(
+    () => fetchByCustomer(range),
+    (raw) => raw.customers,
+    [] as ByCustomerRow[],
+    [range],
+  );
 
   return (
     <>
@@ -160,6 +207,11 @@ export default function DashboardPage() {
                     value: m.breakdown.newToday,
                     dotClass: 'bg-success',
                   },
+                  {
+                    label: 'Unrouted (active)',
+                    value: m.breakdown.unroutedActive ?? 0,
+                    dotClass: 'bg-danger',
+                  },
                 ]}
               />
             </CardBody>
@@ -208,17 +260,189 @@ export default function DashboardPage() {
                 message={
                   <>
                     <strong className="font-semibold">
-                      {unassignedRoute.routeName}
+                      {unassignedRoute.name}
                     </strong>{' '}
                     has no executive assigned.
                   </>
                 }
                 cta="Assign now"
+                onCtaClick={() => router.push('/routes')}
+              />
+            )}
+            {(m.breakdown.unroutedActive ?? 0) > 0 && (
+              <AlertBanner
+                tone="danger"
+                message={
+                  <>
+                    <strong className="font-semibold">
+                      {m.breakdown.unroutedActive}
+                    </strong>{' '}
+                    active{' '}
+                    {(m.breakdown.unroutedActive ?? 0) === 1
+                      ? 'customer has'
+                      : 'customers have'}{' '}
+                    no route — they are not being delivered or billed (EDG-04).
+                  </>
+                }
+                cta="Assign routes"
+                onCtaClick={() => router.push('/customers?unrouted=true')}
               />
             )}
           </CardBody>
         </Card>
+
+        {/* PRD §9 — success metrics vs targets */}
+        <Card>
+          <CardHeader title="Success metrics" subtitle="Live rates against PRD targets" />
+          <CardBody>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <MetricTile
+                label="Onboarding completion"
+                pct={metrics.onboardingCompletion.rate}
+                target={metrics.onboardingCompletion.targetPct}
+                sub={`${metrics.onboardingCompletion.completed} activated · ${metrics.onboardingCompletion.pendingLeads} leads`}
+              />
+              <MetricTile
+                label="Delivery confirmation"
+                pct={metrics.deliveryConfirmation.rate}
+                target={metrics.deliveryConfirmation.targetPct}
+                sub={`${metrics.deliveryConfirmation.delivered}/${metrics.deliveryConfirmation.scheduled} · last ${metrics.deliveryConfirmation.windowDays}d`}
+              />
+              <MetricTile
+                label="Renewal rate"
+                pct={metrics.renewal.rate}
+                target={metrics.renewal.targetPct}
+                sub={`${metrics.renewal.renewed} renewed · ${metrics.renewal.lapsed} lapsed`}
+              />
+            </div>
+          </CardBody>
+        </Card>
+
+        {/* PRD §7.4 — by route: executive performance */}
+        <Card>
+          <CardHeader
+            title="By route — executive performance"
+            subtitle="Completion %, litres, customer count"
+          />
+          <CardBody>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Route</th>
+                  <th>Executive</th>
+                  <th>Customers</th>
+                  <th>Completion</th>
+                  <th>Litres</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byRoute.map((r) => (
+                  <tr key={r.routeId}>
+                    <td className="font-medium text-text-primary">{r.routeName}</td>
+                    <td className={r.executive ? '' : 'text-danger-dark'}>
+                      {r.executive ?? 'Unassigned'}
+                    </td>
+                    <td className="tabular">{r.customerCount}</td>
+                    <td className="tabular">
+                      {r.scheduled > 0
+                        ? `${r.completionPct}% (${r.delivered}/${r.scheduled})`
+                        : '—'}
+                    </td>
+                    <td className="tabular">{r.litres} L</td>
+                  </tr>
+                ))}
+                {byRoute.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-6 text-center text-text-muted">
+                      No route data for this range
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </CardBody>
+        </Card>
+
+        {/* PRD §7.5 — by customer: value, adherence, payment */}
+        <Card>
+          <CardHeader
+            title="By customer — value & adherence"
+            subtitle={`Subscription value, delivery adherence, balance · first ${byCustomer.length}`}
+          />
+          <CardBody>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Route</th>
+                  <th>Monthly value</th>
+                  <th>Adherence</th>
+                  <th>Outstanding</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byCustomer.map((c) => (
+                  <tr key={c.id}>
+                    <td>
+                      <div className="font-medium text-text-primary">{c.name}</div>
+                      <div className="text-xs text-text-muted">{c.code}</div>
+                    </td>
+                    <td>{c.routeName ?? '—'}</td>
+                    <td className="tabular">{formatINR(c.monthlyValue)}</td>
+                    <td className="tabular">
+                      {c.adherencePct == null
+                        ? '—'
+                        : `${c.adherencePct}% (${c.delivered}/${c.scheduled})`}
+                    </td>
+                    <td className="tabular">
+                      {c.outstanding > 0 ? (
+                        <span className="text-danger-dark">{formatINR(c.outstanding)}</span>
+                      ) : c.outstanding < 0 ? (
+                        formatINR(c.outstanding)
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {byCustomer.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-6 text-center text-text-muted">
+                      No customer data
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </CardBody>
+        </Card>
       </div>
     </>
+  );
+}
+
+function MetricTile({
+  label,
+  pct,
+  target,
+  sub,
+}: {
+  label: string;
+  pct: number;
+  target: number;
+  sub: string;
+}) {
+  const ok = pct >= target;
+  return (
+    <div className="rounded-xl border border-border p-4">
+      <div className="text-sm text-text-secondary">{label}</div>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className={`text-2xl font-bold ${ok ? 'text-success-dark' : 'text-warning-dark'}`}>
+          {pct}%
+        </span>
+        <span className="text-xs text-text-muted">target {target}%</span>
+      </div>
+      <div className="text-xs text-text-muted mt-1">{sub}</div>
+    </div>
   );
 }

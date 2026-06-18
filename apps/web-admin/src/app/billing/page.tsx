@@ -50,6 +50,32 @@ export default function BillingPage() {
     .reduce((s, i) => s + i.amount, 0);
   const pending = total - collected;
 
+  // The backend returns the current billing cycle; label it from the actual
+  // period instead of a hardcoded "May 2026" (audit WEB-10).
+  const periodLabel = new Date().toLocaleDateString('en-IN', {
+    month: 'long',
+    year: 'numeric',
+  });
+
+  // Client-side CSV export from the loaded invoices — the button was dead
+  // before (no handler, no endpoint) (audit WEB-11).
+  const exportCsv = () => {
+    const header = ['Customer', 'Code', 'Route', 'Period', 'Litres', 'Amount', 'Paid', 'Paid via'];
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const body = invoices.map((i) =>
+      [i.customerName, i.customerCode, i.routeName, i.period, i.litres, i.amount, i.paid ? 'Yes' : 'No', i.paidVia ?? '']
+        .map(esc)
+        .join(','),
+    );
+    const csv = [header.map(esc).join(','), ...body].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `jharanai-invoices-${periodLabel.replace(/\s/g, '-')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <>
       <Topbar
@@ -80,7 +106,7 @@ export default function BillingPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card className="p-5">
             <div className="text-xs text-text-muted uppercase tracking-wide font-semibold">
-              Billed (May 2026)
+              Billed ({periodLabel})
             </div>
             <div className="text-2xl font-semibold text-text-primary tabular mt-2">
               {formatINR(total)}
@@ -109,13 +135,13 @@ export default function BillingPage() {
           <div className="flex items-center justify-between px-5 pt-5 pb-3">
             <div>
               <h3 className="text-base font-semibold text-text-primary">
-                Invoices · May 2026
+                Invoices · {periodLabel}
               </h3>
               <p className="text-xs text-text-secondary mt-0.5">
                 {invoices.length} customers · current cycle
               </p>
             </div>
-            <button className="btn-secondary">
+            <button className="btn-secondary" onClick={exportCsv}>
               <Download size={16} />
               Export CSV
             </button>

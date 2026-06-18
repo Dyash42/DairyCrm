@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Search, Download, ChevronRight, Plus, Upload } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -34,12 +34,14 @@ const TONE: Record<CustomerStatus, PillTone> = {
   ACTIVE: 'success',
   PAUSED: 'warning',
   CANCELLED: 'danger',
+  PENDING: 'muted', // ARC-08: onboarding lead, not yet paid
 };
 
 const LABEL: Record<CustomerStatus, string> = {
   ACTIVE: 'Active',
   PAUSED: 'Paused',
   CANCELLED: 'Cancelled',
+  PENDING: 'Pending',
 };
 
 export default function CustomersPage() {
@@ -49,6 +51,25 @@ export default function CustomersPage() {
   const [area, setArea] = useState('');
   const [addOpen, setAddOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // EDG-04/BAC-08 deep-link from the dashboard alert: /customers?unrouted=true
+  // shows only ACTIVE-subscription customers with no route. Read once on mount
+  // (SSR-safe) so we don't need a Suspense boundary around useSearchParams.
+  const [unrouted, setUnrouted] = useState<boolean>(
+    () =>
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('unrouted') === 'true',
+  );
+  // ADM-06: debounce the search + area inputs so the list doesn't refetch on
+  // every keystroke (it previously fired a request per character typed).
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [debouncedArea, setDebouncedArea] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQuery(query);
+      setDebouncedArea(area);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query, area]);
 
   async function onExport() {
     setExporting(true);
@@ -65,12 +86,13 @@ export default function CustomersPage() {
   const { data: customers } = useApiWithFallback(
     () =>
       fetchCustomers({
-        q: query || undefined,
+        q: debouncedQuery || undefined,
         status: filter === 'ALL' ? undefined : filter,
-        area: area || undefined,
+        area: debouncedArea || undefined,
+        unrouted: unrouted || undefined,
         limit: 100,
       }),
-    (raw): Customer[] =>
+    (raw): (Customer & { routeName?: string | null })[] =>
       raw.customers.map((c) => ({
         id: c.id,
         code: c.code,
@@ -78,14 +100,18 @@ export default function CustomersPage() {
         phone: c.phone,
         addressLine1: c.addressLine1,
         routeId: c.routeId ?? undefined,
+        routeName: c.routeName ?? null,
         status: c.status,
         litresPerDay: Number(c.litresPerDay),
-        balance: Number(c.balance),
+        // Use the ledger-derived `outstanding` (billed − paid; positive = owes)
+        // instead of the broken Customer.balance (audit DAT-02). Negated so the
+        // existing pill convention (negative = owes → red) renders correctly.
+        balance: c.outstanding != null ? -c.outstanding : Number(c.balance),
         createdAt: '',
         updatedAt: '',
       })),
-    mockCustomers,
-    [query, filter, area],
+    mockCustomers as (Customer & { routeName?: string | null })[],
+    [debouncedQuery, filter, debouncedArea, unrouted],
   );
 
   const rows = useMemo(() => {
@@ -95,6 +121,9 @@ export default function CustomersPage() {
     const a = area.trim().toLowerCase();
     return customers.filter((c) => {
       if (filter !== 'ALL' && c.status !== filter) return false;
+      // Mock/offline path re-filter for the unrouted deep-link (server already
+      // applies it on the live path). routeId absent ⇒ unrouted.
+      if (unrouted && c.routeId) return false;
       if (a && !(c.addressLine1?.toLowerCase().includes(a) ?? false)) return false;
       if (!q) return true;
       return (
@@ -103,7 +132,7 @@ export default function CustomersPage() {
         (c.addressLine1?.toLowerCase().includes(q) ?? false)
       );
     });
-  }, [customers, filter, query, area]);
+  }, [customers, filter, query, area, unrouted]);
 
   return (
     <>
@@ -137,6 +166,7 @@ export default function CustomersPage() {
                 { value: 'ACTIVE', label: 'Active' },
                 { value: 'PAUSED', label: 'Paused' },
                 { value: 'CANCELLED', label: 'Cancelled' },
+                { value: 'PENDING', label: 'Leads' },
               ]}
               value={filter}
               onChange={setFilter}
@@ -161,6 +191,22 @@ export default function CustomersPage() {
             </button>
           </div>
         </div>
+
+        {unrouted && (
+          <div className="mb-4 flex items-center gap-2 text-sm">
+            <span className="px-2 py-0.5 rounded-full bg-danger-light text-danger-dark font-medium">
+              Unrouted active customers (EDG-04)
+            </span>
+            <button
+              onClick={() => {
+                setUnrouted(false);
+                router.replace('/customers');
+              }}
+              className="text-text-secondary hover:text-text-primary underline">
+              Clear filter
+            </button>
+          </div>
+        )}
 
         {/* Table */}
         <Card className="overflow-hidden">
@@ -194,7 +240,7 @@ export default function CustomersPage() {
                   </td>
                   <td>
                     <div className="text-text-primary">
-                      {getRouteName(c.routeId) ?? '—'}
+                      {c.routeName ?? getRouteName(c.routeId) ?? '—'}
                     </div>
                     <div className="text-xs text-text-muted">
                       {c.addressLine1}

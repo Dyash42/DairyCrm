@@ -188,6 +188,40 @@ export default function RouteDetailPage() {
             )}
           </CardBody>
         </Card>
+
+        {/* PRD §5.1.4 — route↔executive reassignment history */}
+        {route.assignmentHistory && route.assignmentHistory.length > 0 && (
+          <Card>
+            <CardHeader
+              title="Reassignment history"
+              subtitle="Executive changes on this route (most recent first)"
+            />
+            <CardBody>
+              <ul className="divide-y divide-divider">
+                {route.assignmentHistory.map((h) => (
+                  <li
+                    key={h.id}
+                    className="flex items-center justify-between py-2.5 text-sm"
+                  >
+                    <span className="text-text-primary">
+                      {h.previousExecutive ?? 'Unassigned'} →{' '}
+                      <span className="font-semibold">{h.executive ?? 'Unassigned'}</span>
+                    </span>
+                    <span className="text-xs text-text-muted tabular">
+                      {new Date(h.at).toLocaleString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </CardBody>
+          </Card>
+        )}
       </div>
 
       {addOpen && (

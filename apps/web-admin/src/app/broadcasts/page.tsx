@@ -22,6 +22,7 @@ import {
   fetchRoutes,
   createBroadcast,
   sendBroadcast,
+  ApiError,
 } from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 import { cn } from '@/lib/cn';
@@ -87,8 +88,11 @@ export default function BroadcastsPage() {
       await sendBroadcast(created.id);
       setMessage('');
       reload();
-    } catch {
-      // surfaced via the error pill in the live banner (TODO)
+    } catch (e) {
+      // Surface failures on a paid bulk-messaging action (audit WEB-05): the
+      // catch used to swallow everything, so a failed blast looked identical
+      // to a successful one and the admin might re-send.
+      window.alert(e instanceof ApiError ? e.message : 'Could not send broadcast. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -227,7 +231,14 @@ export default function BroadcastsPage() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <button className="btn-secondary">
+                {/* Scheduling UI (datetime picker → createBroadcast scheduledFor)
+                    isn't built yet — disable rather than present a dead control
+                    (audit WEB-06). */}
+                <button
+                  className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled
+                  title="Scheduled broadcasts — coming soon"
+                >
                   <CalendarClock size={16} />
                   Schedule
                 </button>

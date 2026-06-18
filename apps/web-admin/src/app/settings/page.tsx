@@ -5,7 +5,16 @@ import Link from 'next/link';
 import { Save, Plus, ShieldAlert } from 'lucide-react';
 import { Topbar } from '@/components/shell/Topbar';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
-import { fetchSettings, updateSetting, fetchHolidays, type SettingRow } from '@/lib/api';
+import {
+  fetchSettings,
+  updateSetting,
+  fetchHolidays,
+  createHoliday,
+  deleteHoliday,
+  changeAdminPassword,
+  ApiError,
+  type SettingRow,
+} from '@/lib/api';
 import { useApiWithFallback } from '@/hooks/useApiWithFallback';
 
 const FALLBACK_SETTINGS: Record<string, SettingRow[]> = {
@@ -117,8 +126,99 @@ export default function SettingsPage() {
         })}
 
         <HolidaysCard />
+        <ChangePasswordCard />
       </div>
     </>
+  );
+}
+
+/**
+ * Admin self-service password change (audit: admin password-reset). Requires
+ * the current password — no email-reset flow yet (that needs an email
+ * provider, which isn't wired). Calls POST /auth/admin/password.
+ */
+function ChangePasswordCard() {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
+
+  async function submit() {
+    setMsg(null);
+    if (next.length < 8) {
+      setMsg({ tone: 'err', text: 'New password must be at least 8 characters.' });
+      return;
+    }
+    if (next !== confirm) {
+      setMsg({ tone: 'err', text: 'New password and confirmation do not match.' });
+      return;
+    }
+    setBusy(true);
+    try {
+      await changeAdminPassword(current, next);
+      setMsg({ tone: 'ok', text: 'Password updated.' });
+      setCurrent('');
+      setNext('');
+      setConfirm('');
+    } catch (e) {
+      setMsg({
+        tone: 'err',
+        text: e instanceof ApiError ? e.message : 'Could not update password',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader title="Change password" subtitle="Your admin login password" />
+      <CardBody className="space-y-3 max-w-sm">
+        <input
+          type="password"
+          value={current}
+          onChange={(e) => setCurrent(e.target.value)}
+          placeholder="Current password"
+          autoComplete="current-password"
+          className="input w-full"
+        />
+        <input
+          type="password"
+          value={next}
+          onChange={(e) => setNext(e.target.value)}
+          placeholder="New password (min 8 characters)"
+          autoComplete="new-password"
+          className="input w-full"
+        />
+        <input
+          type="password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          placeholder="Confirm new password"
+          autoComplete="new-password"
+          className="input w-full"
+        />
+        {msg && (
+          <div
+            className={`text-sm rounded-lg p-2 ${
+              msg.tone === 'ok'
+                ? 'bg-success-light text-success-dark'
+                : 'bg-danger-light text-danger-dark'
+            }`}
+          >
+            {msg.text}
+          </div>
+        )}
+        <button
+          onClick={() => void submit()}
+          disabled={busy || !current || !next || !confirm}
+          className="btn-primary disabled:opacity-50"
+        >
+          {busy ? 'Updating…' : 'Update password'}
+        </button>
+      </CardBody>
+    </Card>
   );
 }
 
@@ -143,6 +243,18 @@ function GroupCard({
 
   async function onSave() {
     if (dirtyKeys.length === 0) return;
+    // WEB-02/13: validate before saving — never POST a NaN / negative for a
+    // NUMBER setting (the backend rejects it too, but catch it here for clear
+    // UX). A blank or garbage field would otherwise become NaN.
+    for (const r of dirtyKeys) {
+      if (r.type === 'NUMBER') {
+        const n = Number(draft[r.key] ?? '');
+        if (!Number.isFinite(n) || n < 0) {
+          window.alert(`"${r.label}" must be a number ≥ 0.`);
+          return;
+        }
+      }
+    }
     setSaving(true);
     try {
       for (const r of dirtyKeys) {
@@ -213,11 +325,44 @@ function GroupCard({
 }
 
 function HolidaysCard() {
-  const { data: holidays } = useApiWithFallback(
+  const { data: holidays, reload } = useApiWithFallback(
     fetchHolidays,
     (raw) => raw.holidays,
     FALLBACK_HOLIDAYS,
   );
+  // Wire the previously-dead Add/Remove controls (audit WEB-04): without these
+  // an admin could not declare a holiday, so deliveries were generated on days
+  // the business intended to close.
+  const [date, setDate] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function add() {
+    if (!date || !reason.trim()) return;
+    setBusy(true);
+    try {
+      await createHoliday({ date, reason: reason.trim() });
+      setDate('');
+      setReason('');
+      reload();
+    } catch (e) {
+      window.alert(e instanceof ApiError ? e.message : 'Could not add holiday');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    setBusy(true);
+    try {
+      await deleteHoliday(id);
+      reload();
+    } catch (e) {
+      window.alert(e instanceof ApiError ? e.message : 'Could not remove holiday');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Card>
@@ -241,15 +386,38 @@ function HolidaysCard() {
               </div>
               <div className="text-xs text-text-muted">{h.reason}</div>
             </div>
-            <button className="text-xs text-danger hover:text-danger-dark font-medium">
+            <button
+              onClick={() => void remove(h.id)}
+              disabled={busy}
+              className="text-xs text-danger hover:text-danger-dark font-medium disabled:opacity-50"
+            >
               Remove
             </button>
           </div>
         ))}
-        <button className="text-sm text-brand font-medium hover:text-brand-600 inline-flex items-center gap-1">
-          <Plus size={14} />
-          Add holiday
-        </button>
+
+        <div className="flex items-center gap-2 pt-1">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="input"
+          />
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason (e.g. Diwali)"
+            className="input flex-1"
+          />
+          <button
+            onClick={() => void add()}
+            disabled={busy || !date || !reason.trim()}
+            className="btn-primary disabled:opacity-50 inline-flex items-center gap-1"
+          >
+            <Plus size={14} />
+            Add
+          </button>
+        </div>
       </CardBody>
     </Card>
   );

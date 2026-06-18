@@ -124,6 +124,66 @@ export function fetchRoutes() {
   return apiFetch<{ routes: RoutePayload[] }>('/routes');
 }
 
+// ----------------------- PRD §7.4 / §7.5 / §9 analytics -----------------------
+
+export interface SuccessMetrics {
+  onboardingCompletion: { rate: number; completed: number; pendingLeads: number; targetPct: number };
+  deliveryConfirmation: {
+    rate: number;
+    delivered: number;
+    scheduled: number;
+    windowDays: number;
+    targetPct: number;
+  };
+  renewal: { rate: number; renewed: number; lapsed: number; targetPct: number };
+  totalCustomers: number;
+}
+
+/** PRD §9 — success-metric instrumentation. */
+export function fetchSuccessMetrics() {
+  return apiFetch<SuccessMetrics>('/dashboard/success-metrics');
+}
+
+export interface ByRouteRow {
+  routeId: string;
+  routeName: string;
+  executive: string | null;
+  customerCount: number;
+  scheduled: number;
+  delivered: number;
+  completionPct: number;
+  litres: number;
+}
+
+/** PRD §7.4 — By Route: executive performance / completion % / customer count. */
+export function fetchByRoute(range: 'TODAY' | 'WEEK' | 'MONTH') {
+  return apiFetch<{ range: string; routes: ByRouteRow[] }>(
+    `/dashboard/by-route?range=${range}`,
+  );
+}
+
+export interface ByCustomerRow {
+  id: string;
+  name: string;
+  code: string;
+  routeName: string | null;
+  status: string;
+  monthlyValue: number;
+  adherencePct: number | null;
+  scheduled: number;
+  delivered: number;
+  outstanding: number;
+}
+
+/** PRD §7.5 — By Customer: subscription value / delivery adherence / payment. */
+export function fetchByCustomer(range: 'TODAY' | 'WEEK' | 'MONTH', cursor?: string) {
+  const qs = new URLSearchParams({ range });
+  if (cursor) qs.set('cursor', cursor);
+  return apiFetch<{ range: string; customers: ByCustomerRow[]; nextCursor: string | null }>(
+    `/dashboard/by-customer?${qs.toString()}`,
+  );
+}
+
 export function fetchRouteDetail(id: string) {
   return apiFetch<{
     id: string;
@@ -137,8 +197,15 @@ export function fetchRouteDetail(id: string) {
       name: string;
       addressLine1: string;
       routeSeq: number | null;
-      status: 'ACTIVE' | 'PAUSED' | 'CANCELLED';
+      status: 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'PENDING';
       litresPerDay: string | number;
+    }>;
+    /** PRD §5.1.4 — recent route↔executive reassignment history. */
+    assignmentHistory?: Array<{
+      id: string;
+      at: string;
+      executive: string | null;
+      previousExecutive: string | null;
     }>;
   }>(`/routes/${id}`);
 }
@@ -147,12 +214,15 @@ export function fetchCustomers(params: {
   q?: string;
   status?: string;
   area?: string;
+  /** EDG-04/BAC-08: only customers with an active sub but no route. */
+  unrouted?: boolean;
   limit?: number;
 } = {}) {
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
   if (params.status) qs.set('status', params.status);
   if (params.area) qs.set('area', params.area);
+  if (params.unrouted) qs.set('unrouted', 'true');
   if (params.limit) qs.set('limit', String(params.limit));
   const q = qs.toString();
   return apiFetch<{ customers: CustomerPayload[]; nextCursor: string | null }>(
@@ -331,6 +401,15 @@ export function recordCashPayment(input: {
   return apiFetch<PaymentRow>('/payments', { method: 'POST', body: input });
 }
 
+/** Patch mutable customer fields (ADM-03 route reassign, ADM-08 litres edit).
+ *  The backend syncs litresPerDay onto the ACTIVE subscription. */
+export function updateCustomer(
+  id: string,
+  patch: { routeId?: string; litresPerDay?: number; name?: string; phone?: string; area?: string },
+) {
+  return apiFetch<CustomerPayload>(`/customers/${id}`, { method: 'PATCH', body: patch });
+}
+
 export function fetchBroadcasts() {
   return apiFetch<{
     broadcasts: Array<{
@@ -451,10 +530,26 @@ export function updateSetting(key: string, value: unknown) {
   );
 }
 
+/** Authenticated admin self-service password change (requires current password). */
+export function changeAdminPassword(currentPassword: string, newPassword: string) {
+  return apiFetch<{ ok: true }>('/auth/admin/password', {
+    method: 'POST',
+    body: { currentPassword, newPassword },
+  });
+}
+
 export function fetchHolidays() {
   return apiFetch<{
     holidays: Array<{ id: string; date: string; reason: string; scope: string }>;
   }>('/settings/holidays');
+}
+
+export function createHoliday(input: { date: string; reason: string; scope?: string }) {
+  return apiFetch<{ id: string }>('/settings/holidays', { method: 'POST', body: input });
+}
+
+export function deleteHoliday(id: string) {
+  return apiFetch<{ ok: true }>(`/settings/holidays/${id}`, { method: 'DELETE' });
 }
 
 export interface AuditEvent {
@@ -722,7 +817,7 @@ export interface DashboardMetricsPayload {
   completionPct: number;
   completionDeltaPct: number;
   hourlyDelivery: Array<{ hour: number; litres: number }>;
-  breakdown: { pending: number; missed: number; paused: number; newToday: number };
+  breakdown: { pending: number; missed: number; paused: number; newToday: number; unroutedActive?: number };
   byRoute: Array<{ routeName: string; litres: number; completionPct: number }>;
   subscriptions: { active: number; paused: number; cancelled: number; total: number };
 }
@@ -743,7 +838,13 @@ export interface CustomerPayload {
   phone: string;
   addressLine1: string;
   routeId: string | null;
-  status: 'ACTIVE' | 'PAUSED' | 'CANCELLED';
+  status: 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'PENDING';
   litresPerDay: string | number;
   balance: string | number;
+  /** Ledger-derived amount owed (billed − paid; positive = owes). Replaces the
+   *  broken Customer.balance for the "owes money" indicator (audit DAT-02). */
+  outstanding?: number;
+  /** Resolved route name from the server (the list used to look up live cuids
+   *  in the mock route array → always "—"; audit WEB-01). */
+  routeName?: string | null;
 }

@@ -36,6 +36,7 @@ export const dashboardMetrics: DashboardMetrics = {
     missed: 6,
     paused: 22,
     newToday: 9,
+    unroutedActive: 3,
   },
   byRoute: [
     { routeName: 'Route 1', litres: 178, completionPct: 97 },

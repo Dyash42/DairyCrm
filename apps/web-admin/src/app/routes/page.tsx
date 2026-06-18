@@ -51,8 +51,16 @@ export default function RoutesPage() {
       await assignRouteExecutive(routeId, executiveId || null);
       reload();
       reloadExecs();
-    } catch {
-      // Backend unreachable (demo mode) — the selection simply won't persist.
+    } catch (e) {
+      // Surface real backend errors (e.g. 409 "Executive already assigned to
+      // another route") instead of silently swallowing every failure as
+      // "demo mode" (audit ADM-05). Only network/infra errors stay silent.
+      if (e instanceof ApiError) {
+        window.alert(e.message);
+      }
+      // Re-sync the dropdown with server truth either way.
+      reload();
+      reloadExecs();
     }
   }
 

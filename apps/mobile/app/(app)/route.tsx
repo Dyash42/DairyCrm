@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { deliveryApi } from '@/api/deliveryApi';
+import { isApiError } from '@/api/errors';
 import { getLocationProvider } from '@/services/location';
 import { getNavigationProvider } from '@/services/navigation';
 import { ConfirmDeliverySheet } from '@/components/ConfirmDeliverySheet';
@@ -41,6 +42,7 @@ export default function TodaysRouteScreen() {
   const summary = useRouteStore((s) => s.summary);
   const refresh = useRouteStore((s) => s.refresh);
   const source = useRouteStore((s) => s.source);
+  const noRouteAssigned = useRouteStore((s) => s.noRouteAssigned);
   const online = useNetworkStore((s) => s.online);
   const queueDepth = useSyncStore((s) => s.queueDepth);
   const lastScan = useScanStore((s) => s.lastScan);
@@ -59,7 +61,15 @@ export default function TodaysRouteScreen() {
     const stops = useRouteStore.getState().summary.stops;
     const match = stops.find((s) => normalizeScannedCode(s.customerCode) === code);
     if (match) {
-      setConfirmStop(match);
+      // MIL-06: re-scanning an already-delivered/skipped stop must not silently
+      // reopen the confirm sheet (which invites a duplicate confirm whose cash
+      // the backend then drops). Inform instead; the card tap is the explicit
+      // path to correct a completed stop (MOB-05).
+      if (!match.isPending) {
+        toast.info(`${match.customerName} is already ${statusWord(match.status)} today`);
+      } else {
+        setConfirmStop(match);
+      }
       return;
     }
     // Not on the route — confirm the QR is at least valid, then explain.
@@ -67,8 +77,17 @@ export default function TodaysRouteScreen() {
       try {
         await deliveryApi.lookupByCode(code);
         toast.warning(`${code} is not on today's route`);
-      } catch {
-        toast.danger(`Unknown QR: ${code}`);
+      } catch (e) {
+        // MOB-11: distinguish a transient lookup failure from a genuinely
+        // unknown QR — a network blip on a valid sticker must not read as
+        // "invalid", which would make the agent abandon a real delivery.
+        if (isApiError(e) && (e.kind === 'network' || e.kind === 'timeout')) {
+          toast.warning(`Couldn't verify ${code} — connection issue. Check signal and rescan.`);
+        } else if (isApiError(e) && e.kind === 'notFound') {
+          toast.danger(`Unknown QR: ${code}`);
+        } else {
+          toast.danger(`Couldn't look up ${code}. Try again.`);
+        }
       }
     })();
   }, [lastScan]);
@@ -107,6 +126,25 @@ export default function TodaysRouteScreen() {
     setRefreshing(false);
   };
 
+  // MIL-07/MOB-12: capture the door GPS whenever a stop still has no pin — on
+  // BOTH deliver and skip (a repeatedly not-home customer is exactly who needs a
+  // pin, yet skip never captured one before). Best-effort + non-blocking; if
+  // location is denied/unavailable we surface a quiet signal instead of failing
+  // silently, and the next deliver/skip re-attempts while the pin is missing.
+  const captureDoorPinIfMissing = (stop: DeliveryStop) => {
+    if ((stop.lat != null && stop.lng != null) || !stop.customerId) return;
+    void getLocationProvider()
+      .getCurrentPosition()
+      .then((c) => {
+        if (!c) {
+          toast.info('Location not captured — enable location to pin this door.');
+          return undefined;
+        }
+        return deliveryApi.saveCustomerLocation(stop.customerId, c.lat, c.lng);
+      })
+      .catch(() => undefined);
+  };
+
   const handleDeliver = (
     stop: DeliveryStop,
     qty: number,
@@ -120,16 +158,7 @@ export default function TodaysRouteScreen() {
       cashCollected: cash,
       kind: qty < stop.scheduledLitres ? 'PARTIAL' : 'DELIVERED',
     });
-    // First-delivery door-pin capture: if this customer has no location yet,
-    // grab the device GPS at the door and save it (best-effort, non-blocking).
-    if ((stop.lat == null || stop.lng == null) && stop.customerId) {
-      void getLocationProvider()
-        .getCurrentPosition()
-        .then((c) =>
-          c ? deliveryApi.saveCustomerLocation(stop.customerId, c.lat, c.lng) : undefined,
-        )
-        .catch(() => undefined);
-    }
+    captureDoorPinIfMissing(stop);
     toast.success(`Delivered ${fmtLitres(qty)} L to ${stop.customerName}`);
   };
 
@@ -142,7 +171,49 @@ export default function TodaysRouteScreen() {
       note: 'Skipped',
       kind: 'SKIPPED',
     });
+    captureDoorPinIfMissing(stop); // MIL-07: pin not-home customers too
     toast.info(`Skipped ${stop.customerName}`);
+  };
+
+  // MIL-08: navigate, warning the agent when there is no exact door pin (or no
+  // location at all) rather than silently opening maps to a wrong/empty place.
+  const handleNavigate = async (stop: DeliveryStop) => {
+    const res = await getNavigationProvider().navigateTo({
+      lat: stop.lat,
+      lng: stop.lng,
+      label: `${stop.customerName}, ${stop.addressLine}`,
+    });
+    if (!res.ok) {
+      toast.warning('No location for this stop yet — capture the door pin on delivery.');
+    } else if (res.approximate) {
+      toast.info('Approximate location — no exact door pin saved yet.');
+    }
+  };
+
+  // MOB-05: correct an already-completed stop (online only — corrections are
+  // exceptional and reconcile cash server-side). Refresh from the server after,
+  // since the offline optimistic store doesn't model corrections.
+  const handleCorrect = async (
+    stop: DeliveryStop,
+    change: { deliveredLitres?: number; cashCollected?: number | null; skip?: boolean },
+  ) => {
+    if (!useNetworkStore.getState().online) {
+      toast.warning('Corrections need a connection. Reconnect and try again.');
+      return;
+    }
+    try {
+      await deliveryApi.correct({
+        deliveryId: stop.id,
+        deliveredLitres: change.skip ? undefined : change.deliveredLitres,
+        skip: change.skip,
+        cashCollected: change.cashCollected ?? undefined,
+        reason: 'field correction',
+      });
+      toast.success(`Updated ${stop.customerName}`);
+      await refresh();
+    } catch (e) {
+      toast.danger(isApiError(e) ? e.message : 'Could not update — try again.');
+    }
   };
 
   return (
@@ -210,24 +281,23 @@ export default function TodaysRouteScreen() {
           <StopCard
             stop={stop}
             onScanPressed={() => router.push('/scan')}
-            onMorePressed={() => {
-              if (stop.isPending) setConfirmStop(stop);
-            }}
-            onNavigatePressed={() =>
-              void getNavigationProvider().navigateTo({
-                lat: stop.lat,
-                lng: stop.lng,
-                label: `${stop.customerName}, ${stop.addressLine}`,
-              })
-            }
+            // MOB-05: tapping any stop opens the sheet — pending → confirm,
+            // already-done → correction (handled in the sheet callbacks).
+            onMorePressed={() => setConfirmStop(stop)}
+            onNavigatePressed={() => void handleNavigate(stop)}
           />
         )}
         ListEmptyComponent={
           <View style={styles.empty}>
             <AppText style={styles.emptyText}>
-              {summary.totalCustomers === 0
-                ? 'No route loaded yet. Pull to refresh.'
-                : 'No matches'}
+              {/* MIL-09: a missing route assignment is an admin gap, not a
+                  loading/network state — say so instead of inviting endless
+                  pull-to-refresh. */}
+              {noRouteAssigned
+                ? 'No route is assigned to your account yet — please contact your supervisor.'
+                : summary.totalCustomers === 0
+                  ? 'No route loaded yet. Pull to refresh.'
+                  : 'No matches'}
             </AppText>
           </View>
         }
@@ -252,12 +322,20 @@ export default function TodaysRouteScreen() {
         stop={confirmStop}
         onClose={() => setConfirmStop(null)}
         onDeliver={(qty, cash) => {
-          if (confirmStop) handleDeliver(confirmStop, qty, cash);
+          const stop = confirmStop;
           setConfirmStop(null);
+          if (!stop) return;
+          // Pending → normal offline-queued delivery. Already-done → online
+          // correction (MOB-05).
+          if (stop.isPending) handleDeliver(stop, qty, cash);
+          else void handleCorrect(stop, { deliveredLitres: qty, cashCollected: cash });
         }}
         onSkip={() => {
-          if (confirmStop) handleSkip(confirmStop);
+          const stop = confirmStop;
           setConfirmStop(null);
+          if (!stop) return;
+          if (stop.isPending) handleSkip(stop);
+          else void handleCorrect(stop, { skip: true });
         }}
       />
 
@@ -363,6 +441,20 @@ function MenuItem({
       <AppText style={[styles.menuItemText, { color }]}>{label}</AppText>
     </Pressable>
   );
+}
+
+/** Human word for a stop's status, used in the "already done" scan toast. */
+function statusWord(status: DeliveryStop['status']): string {
+  switch (status) {
+    case 'delivered':
+      return 'delivered';
+    case 'partial':
+      return 'partially delivered';
+    case 'skipped':
+      return 'skipped';
+    default:
+      return 'pending';
+  }
 }
 
 const styles = StyleSheet.create({

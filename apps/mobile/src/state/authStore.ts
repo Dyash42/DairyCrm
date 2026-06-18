@@ -46,6 +46,9 @@ interface AuthState {
 function enterApp(user: AuthUser): void {
   // Scope the offline queue to this executive (audit MOB-03) and load the route.
   useSyncStore.getState().setCurrentExecutive(user.id);
+  // MOB-09: cache the identity so a later server-down launch can re-enter the
+  // app from it instead of forcing a sign-out the agent can't recover offline.
+  void tokenStore.writeUser(user);
   void useRouteStore.getState().refresh();
   void useSyncStore.getState().refreshDepth();
 }
@@ -77,10 +80,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       enterApp(me);
     } catch (e) {
       if (isApiError(e) && e.kind === 'unauthorized') {
-        await tokenStore.clear();
+        // Token genuinely rejected — clear everything and require re-auth.
+        await Promise.all([tokenStore.clear(), tokenStore.clearUser()]);
         set({ status: 'signedOut', user: null });
       } else {
-        set({ status: 'signedOut', user: null, lastError: 'Could not reach server' });
+        // MOB-09: server unreachable (network/timeout/5xx) but the token wasn't
+        // rejected. Enter a degraded mode from the cached identity instead of
+        // stranding the agent on a login screen that itself needs the server —
+        // the route/sync layers retry on focus + reconnect.
+        const cachedUser = await tokenStore.readUser<AuthUser>();
+        if (cachedUser) {
+          set({ status: 'signedIn', user: cachedUser, lastError: 'Offline — showing last data' });
+          enterApp(cachedUser);
+        } else {
+          set({ status: 'signedOut', user: null, lastError: 'Could not reach server' });
+        }
       }
     }
   },
@@ -126,13 +140,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   useOtpInstead: async () => {
-    await Promise.all([tokenStore.clear(), tokenStore.clearPinPhone()]);
+    await Promise.all([tokenStore.clear(), tokenStore.clearPinPhone(), tokenStore.clearUser()]);
     set({ status: 'signedOut', user: null, pinPhone: null });
     useSyncStore.getState().setCurrentExecutive(null);
   },
 
   signOut: async () => {
-    await Promise.all([tokenStore.clear(), tokenStore.clearPinPhone()]);
+    await Promise.all([tokenStore.clear(), tokenStore.clearPinPhone(), tokenStore.clearUser()]);
     set({ status: 'signedOut', user: null, pinPhone: null });
     useSyncStore.getState().setCurrentExecutive(null);
     useRouteStore.getState().reset();

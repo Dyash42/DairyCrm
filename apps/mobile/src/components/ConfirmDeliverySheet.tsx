@@ -40,10 +40,12 @@ export function ConfirmDeliverySheet({
   // MOB-04: guard against a double-tap firing two /confirm scans for one stop.
   const [submitting, setSubmitting] = useState(false);
 
-  // Reset local state whenever a new stop is opened.
+  // Reset local state whenever a new stop is opened. For a correction (an
+  // already-delivered stop, MOB-05) start from what was recorded so the agent
+  // edits the real value, not the scheduled default.
   useEffect(() => {
     if (stop) {
-      setQty(stop.scheduledLitres);
+      setQty(stop.deliveredLitres ?? stop.scheduledLitres);
       setCash('');
     }
   }, [stop]);

@@ -15,17 +15,30 @@ export interface NavDestination {
   label?: string;
 }
 
+export interface NavResult {
+  /** false = nothing to navigate to (no pin AND no usable address label). */
+  ok: boolean;
+  /** true = navigated to an approximate address, not an exact door pin (MIL-08). */
+  approximate: boolean;
+}
+
 export interface NavigationProvider {
   readonly name: string;
-  navigateTo(dest: NavDestination): Promise<void>;
+  navigateTo(dest: NavDestination): Promise<NavResult>;
 }
 
 class DeviceMapsNavigationProvider implements NavigationProvider {
   readonly name = 'device-maps';
 
-  async navigateTo({ lat, lng, label }: NavDestination): Promise<void> {
+  async navigateTo({ lat, lng, label }: NavDestination): Promise<NavResult> {
     const hasCoords = typeof lat === 'number' && typeof lng === 'number';
-    const dest = hasCoords ? `${lat},${lng}` : encodeURIComponent(label ?? '');
+    const cleanLabel = (label ?? '').trim();
+    // MIL-08: don't open maps with an empty destination — for an un-pinned stop
+    // with no address we report ok:false so the UI can tell the agent why.
+    if (!hasCoords && !cleanLabel) {
+      return { ok: false, approximate: true };
+    }
+    const dest = hasCoords ? `${lat},${lng}` : encodeURIComponent(cleanLabel);
     const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`;
     const nativeUrl = hasCoords
       ? Platform.select({
@@ -38,12 +51,13 @@ class DeviceMapsNavigationProvider implements NavigationProvider {
     try {
       if (nativeUrl && (await Linking.canOpenURL(nativeUrl))) {
         await Linking.openURL(nativeUrl);
-        return;
+        return { ok: true, approximate: false };
       }
     } catch {
       // fall through to the universal web URL
     }
     await Linking.openURL(webUrl);
+    return { ok: true, approximate: !hasCoords };
   }
 }
 

@@ -14,8 +14,22 @@ import { Platform } from 'react-native';
  */
 const JWT_KEY = 'jharanai_exec_jwt';
 const PIN_PHONE_KEY = 'jharanai_exec_pin_phone';
+// MOB-09: cache the authenticated user so a server-down app launch can enter a
+// degraded/offline mode (from the cached identity) instead of forcing sign-out.
+const USER_KEY = 'jharanai_exec_user';
 
 const isWeb = Platform.OS === 'web';
+
+// MOB-07: the web build keeps the JWT in localStorage — readable by any JS on
+// the origin and persisting past tab close. That is acceptable ONLY for the
+// `expo start --web` preview; the web build must not be shipped to executives
+// against the real API (native uses expo-secure-store / Keychain / Keystore).
+if (isWeb) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[tokenStore] web build stores the JWT in localStorage — PREVIEW ONLY, not for production use.',
+  );
+}
 
 function webStore(): {
   getItem(k: string): string | null;
@@ -59,4 +73,17 @@ export const tokenStore = {
   readPinPhone: (): Promise<string | null> => rawGet(PIN_PHONE_KEY),
   writePinPhone: (phone: string): Promise<void> => rawSet(PIN_PHONE_KEY, phone),
   clearPinPhone: (): Promise<void> => rawDel(PIN_PHONE_KEY),
+
+  /** MOB-09: last authenticated user, for degraded/offline bootstrap. */
+  async readUser<T>(): Promise<T | null> {
+    const raw = await rawGet(USER_KEY);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  },
+  writeUser: (user: unknown): Promise<void> => rawSet(USER_KEY, JSON.stringify(user)),
+  clearUser: (): Promise<void> => rawDel(USER_KEY),
 };

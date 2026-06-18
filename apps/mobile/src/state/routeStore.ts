@@ -30,6 +30,9 @@ interface RouteState {
   summary: RouteSummary;
   source: RouteDataSource;
   errorMessage?: string;
+  /** MIL-09: server returned routeId:null — this executive has no route assigned
+   *  (distinct from a still-loading / empty-network state). */
+  noRouteAssigned: boolean;
   demoMode: DemoMode;
   refresh: () => Promise<void>;
   markDelivered: (stopId: string, litres: number) => void;
@@ -54,6 +57,7 @@ function patchStop(
 export const useRouteStore = create<RouteState>((set, get) => ({
   summary: emptySummary(),
   source: 'loading',
+  noRouteAssigned: false,
   demoMode: 'off',
 
   refresh: async () => {
@@ -68,7 +72,12 @@ export const useRouteStore = create<RouteState>((set, get) => ({
         routeLabel: res.routeId == null ? 'No route assigned' : 'Today',
         stops: res.stops,
       });
-      set({ summary, source: 'live', errorMessage: undefined });
+      set({
+        summary,
+        source: 'live',
+        errorMessage: undefined,
+        noRouteAssigned: res.routeId == null,
+      });
     } catch (e) {
       // Keep whatever we had; flag the error (the data doesn't vanish).
       const message = isApiError(e) ? e.message : String(e);

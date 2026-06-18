@@ -93,6 +93,19 @@ const SkipBody = z.object({
   reason: z.string().max(500).optional(),
 });
 
+// MOB-05: a same-day correction of an already-confirmed/skipped stop. Lets the
+// field agent fix a fat-fingered quantity or an accidental skip/cash entry
+// without admin DB surgery. Reconciles the door-cash Payment so balance + EOD
+// stay correct, and stamps an audit note on the delivery.
+const CorrectBody = z.object({
+  deliveredLitres: z.coerce.number().min(0).max(50).optional(),
+  /** true → mark the stop SKIPPED (not delivered). */
+  skip: z.boolean().optional(),
+  /** Corrected cash collected at the door (replaces any prior door cash). */
+  cashCollected: z.coerce.number().min(0).max(100000).optional(),
+  reason: z.string().max(500).optional(),
+});
+
 const EndOfDayBody = z.object({
   /**
    * Optional sanity check from the mobile app. If the milkman's tally
@@ -404,6 +417,112 @@ export async function registerDeliveryRoutes(app: App) {
           .send({ ...current!, idempotent: true });
       }
       return current!;
+    },
+  });
+
+  app.post('/:id/correct', {
+    handler: async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = CorrectBody.parse(req.body);
+
+      const delivery = await prisma.delivery.findUnique({ where: { id } });
+      if (!delivery) return reply.status(404).send({ error: 'NotFound' });
+
+      const me = req.user;
+      let executiveId: string | null = null;
+      if (me.role === 'EXECUTIVE') {
+        const exec = await prisma.executive.findFirst({
+          where: { userId: me.sub },
+          select: { id: true, routeId: true },
+        });
+        executiveId = exec?.id ?? null;
+        if (!exec || exec.routeId !== delivery.routeId) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'Delivery is on another route',
+          });
+        }
+      }
+
+      // Corrections are today-only — past days are closed for EOD reconciliation
+      // and billing snapshots, so a retroactive edit there would silently rewrite
+      // settled cash/litres.
+      const today = startOfTodayUTC();
+      if (delivery.scheduledFor.getTime() !== today.getTime()) {
+        return reply.status(422).send({
+          error: 'NotToday',
+          message: 'Only today’s deliveries can be corrected.',
+        });
+      }
+
+      const scheduled = new Prisma.Decimal(delivery.scheduledLitres);
+      const skip = body.skip === true;
+      const newLitres = skip
+        ? new Prisma.Decimal(0)
+        : body.deliveredLitres === undefined
+          ? scheduled
+          : new Prisma.Decimal(body.deliveredLitres);
+      if (!skip && newLitres.lte(0)) {
+        return reply.status(422).send({
+          error: 'ZeroLitres',
+          message: 'Use skip:true to mark a stop as not delivered.',
+        });
+      }
+      const status = skip
+        ? DeliveryStatus.SKIPPED
+        : newLitres.lt(scheduled)
+          ? DeliveryStatus.PARTIAL
+          : DeliveryStatus.DELIVERED;
+
+      const corrected = await prisma.$transaction(async (tx) => {
+        // Reverse any prior door-cash for this delivery, then re-post the
+        // corrected amount, so Customer.balance and the EOD cash tally reflect
+        // the correction rather than double-counting. The `delivery:<id>`
+        // reference is unique, so the old (mistaken) row must go before the new.
+        const ref = `delivery:${id}`;
+        const existingCash = await tx.payment.findFirst({
+          where: { reference: ref, mode: PaymentMode.CASH, status: PaymentStatus.PAID },
+        });
+        if (existingCash) {
+          await tx.customer.update({
+            where: { id: delivery.customerId },
+            data: { balance: { decrement: existingCash.amount } },
+          });
+          await tx.payment.delete({ where: { id: existingCash.id } });
+        }
+        if (typeof body.cashCollected === 'number' && body.cashCollected > 0) {
+          await tx.payment.create({
+            data: {
+              customerId: delivery.customerId,
+              amount: body.cashCollected,
+              mode: PaymentMode.CASH,
+              status: PaymentStatus.PAID,
+              reference: ref,
+              paidAt: new Date(),
+            },
+          });
+          await tx.customer.update({
+            where: { id: delivery.customerId },
+            data: { balance: { increment: body.cashCollected } },
+          });
+        }
+
+        const auditNote = `[corrected ${executiveId ? `by exec ${executiveId}` : 'by admin'}]${
+          body.reason ? ` ${body.reason}` : ''
+        }`;
+        return tx.delivery.update({
+          where: { id },
+          data: {
+            status,
+            deliveredLitres: skip ? null : newLitres,
+            scannedAt: new Date(),
+            note: auditNote,
+            ...(executiveId ? { executiveId } : {}),
+          },
+          include: { customer: true },
+        });
+      });
+      return corrected;
     },
   });
 

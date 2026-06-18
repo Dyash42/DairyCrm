@@ -108,6 +108,29 @@ export const deliveryApi = {
   },
 
   /**
+   * MOB-05: correct an already-confirmed/skipped stop the same day (fix a wrong
+   * quantity, an accidental skip, or wrong cash). Online-only — corrections are
+   * exceptional and reconcile cash server-side, so they don't go through the
+   * offline scan queue. The backend reverses prior door-cash and re-posts.
+   */
+  async correct(params: {
+    deliveryId: string;
+    deliveredLitres?: number;
+    skip?: boolean;
+    cashCollected?: number | null;
+    reason?: string | null;
+  }): Promise<void> {
+    const body: Record<string, unknown> = {};
+    if (params.skip) body.skip = true;
+    if (!params.skip && params.deliveredLitres != null) {
+      body.deliveredLitres = params.deliveredLitres;
+    }
+    if (params.cashCollected != null) body.cashCollected = params.cashCollected;
+    if (params.reason) body.reason = params.reason;
+    await api.post(`/deliveries/${params.deliveryId}/correct`, body);
+  },
+
+  /**
    * Submit the end-of-day report. The backend computes the authoritative
    * totals from confirmed deliveries + payments; the milkman's tally is for
    * variance reporting plus optional notes.

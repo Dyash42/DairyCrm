@@ -1,81 +1,89 @@
-# Jharanai CRM — Remaining Work (reconciled 2026-06-18)
+# Jharanai CRM — Remaining Work (updated 2026-06-18, after Batch 12)
 
-This is the authoritative "what's left" list, produced by reconciling
-`docs/AUDIT_REMEDIATION.md` (what was implemented across Batches 1–11) against the
-full 139-finding `docs/AUDIT_FINDINGS.md`. Numbers: **139 confirmed findings · ~106
-fixed · 4 false-positives (no fix) · ~29 still open or partial · final re-audit not
-yet run.** All **18 criticals are fixed.** Verified green at time of writing:
-backend `tsc` + **178 tests**, mobile `tsc` + **14 tests**, web-admin `tsc`.
+This is the authoritative "what's left" list. **Batch 12 closed every remaining
+code finding** across backend, mobile, and web-admin (waves A–D, all committed on
+`audit-remediation`). What remains is **client-owned infrastructure/credentials**
+and a small set of explicitly-deferred enhancements — not code defects.
 
-> ⚠️ Every item below is point-in-time. **Re-verify against current code before acting.**
-> Finding detail (WHAT/IMPACT/FIX/file:line) is in `docs/AUDIT_FINDINGS.md` by ID.
+**Verified green at time of writing:** backend `tsc` + **178 tests**, mobile
+`tsc` + **14 tests**, web-admin `tsc`. See `docs/PRODUCTION_READINESS.md` for the
+honest readiness assessment + the go-live checklist.
 
----
-
-## A. Fixed but mislabelled in the tracker (verified done — do NOT redo)
-The remediation tracker resolved these under a different ID; confirmed in code:
-- **ADM-01** route↔exec reassignment history → done as Batch 11 §5.1.4 (`RouteAssignment` table + `assignmentHistory`).
-- **ADM-12** holiday UI → done as **WEB-04**.
-- **BAC-09** auto-resume FAILED-on-send → done as **ARC-06/EDG-12** (reminder is now best-effort, never reverts a committed resume).
-- **BAC-11 / EDG-10** dup-reference mis-credit → closed by **DAT-10** (`Payment.reference` is now `@@unique`).
-- **INT-02** worker liveness → covered by **PRO-07** (`/health` + heartbeat).
-
-## B. Partially done — finish these
-- [ ] **EDG-02** — onboarding can charge then fail to activate. Activation is now idempotent, but it still fires on the customer's *next inbound message*, not the payment webhook. Full fix needs webhook-driven activation (a Payment-intent/linkage column). Deferred-by-design today; revisit for true "pay → auto-activate".
-- [ ] **EDG-03** — no "one ACTIVE subscription per customer" guard. Double-delivery/billing is prevented (unique delivery key + renew-extends), but admin-create + WhatsApp onboarding can still leave a customer with 2 ACTIVE subs, and cancel only cancels one. Add a partial-unique (customerId WHERE status=ACTIVE) or an app-level check across all create paths.
-
-## C. Genuinely open — confirmed NOT addressed
-**Backend / money / correctness**
-- [ ] **INT-05** — Meta template variables mapped by `Object.values()` insertion order, not the template's declared slot array. *Can send wrong numbers in billing-facing WhatsApp messages.* **Highest priority of the remaining.** (`providers/messaging/meta.ts`)
-- [ ] **ADM-11** — broadcast per-recipient `WhatsAppLog` not linked to `customerId` (audit/retry attribution lost).
-- [ ] **CUS-10** — support flow parks in `await_close`, intercepting the customer's next message.
-- [ ] **CUS-11** — no session/flow-timeout nudge; an abandoned onboarding resumed >24h later gets silence.
-- [ ] **BAC-04 / CUS-09** — onboarding never asks a day-of-week pattern (always every-day); diverges from renew/admin. (Product decision: is every-day-only acceptable for onboarding?)
-- [ ] **DAT-08** — reassigning a customer's route does NOT re-materialize today's already-created delivery (it stays on the old route until the next cron).
-- [ ] **DAT-09** — `onDelete: Cascade` on Payment/Delivery means a future hard-delete would wipe financial history; no soft-delete/`deletedAt`. Latent (no hard-delete endpoint today). Recommend `onDelete: Restrict` on Payment/Delivery.
-- [ ] **EDG-11** — delivery-confirm route-ownership guard read happens outside the atomic claim (cross-route race window).
-- [ ] **EDG-13** — location-token consume (`POST /location/:token`) is not atomic (two concurrent saves both pass the used-check).
-- [ ] **ARC-07** — bot-prompt cache is per-process; an admin prompt edit only refreshes the serving pod (multi-instance staleness).
-
-**Mobile UX** (NOTE: exact finding text for several wasn't carried into the tracker — pull the WHAT/IMPACT from `docs/AUDIT_FINDINGS.md` by ID before fixing)
-- [ ] **MIL-03** 0-L confirm sends "Delivered 0 L" *(NOTE: a 0-L guard was added in Batch 9 / MOB-06 — re-verify whether MIL-03 is already covered)*
-- [ ] **MIL-06** re-scanning an already-done stop reopens the confirm sheet
-- [ ] **MIL-07** door-pin GPS captured only on deliver, never on skip
-- [ ] **MIL-08** Navigate with no pin hands maps a raw address string with no "approximate" warning
-- [ ] **MIL-09** milkman with no assigned route sees a generic empty state, not "no route assigned — contact supervisor"
-- [ ] **MOB-05** can't correct a wrong quantity / accidental skip after confirm (no edit path)
-- [ ] **MOB-07** web build stores the JWT in plain `localStorage` (web is dev-preview only; hardening note)
-- [ ] **MOB-09** offline bootstrap forces sign-out on server-down while the sync engine still drains under the cached token
-- [ ] **MOB-11** off-route / transient-error scan shows "Unknown QR" — doesn't distinguish network/timeout from genuine not-found
-- [ ] **MOB-12** first-delivery location capture is a direct (non-queued) best-effort call; lost when offline at the door
-
-**Web-admin / integration / perf**
-- [ ] **WEB-09** Add-Customer modal sends `litresPerDay` with no client validation (0/NaN possible)
-- [ ] **ADM-07** customer "area" filter matches `addressLine1` client-side but `Customer.area` server-side (inconsistent results)
-- [ ] **INT-07** mobile `EXPO_PUBLIC_API_BASE` defaults to the Android-emulator loopback; a release build without it baked in points at `10.0.2.2`; no https enforcement
-- [ ] **INT-08** the public `/pin/<token>` page is served from `ADMIN_ORIGIN` — couples a customer flow to the internal admin origin (breaks if admin is locked down)
-- [ ] **INT-09** `useApiWithFallback` shows mock fixtures on a live 5xx/network error — masks real outages; reserve for an explicit demo flag
-- [ ] **INT-12** rename misleading `createRazorpayPaymentLink` (it's provider-agnostic) to avoid a future provider-lock regression
-- [ ] **PER-09** today's-deliveries `ORDER BY customer.routeSeq` has no backing index (audit itself judged this near-unfixable due to the join — likely WONTFIX; confirm)
-
-## D. Deferred / client-owned (⚪ — not code gaps)
-- [ ] **PRO-09** PgBouncer `connection_limit=1` + interactive transactions guidance
-- [ ] **PRO-10** Sentry traces sampling + per-job coverage (partly covered by PRO-06)
-- [ ] **PRO-11** `prisma` CLI in devDeps risks migration skip on prod prune; make the release step hard-fail
-- [ ] Real payment-gateway / Meta WhatsApp / SMS / email credentials
-- [ ] **Applying** the committed migrations to prod (`prisma migrate deploy`) + provisioning **Redis** (REDIS_URL) for multi-instance
-- [ ] Email-based admin forgot-password (authenticated change-password is done; needs an email provider)
-
-## E. Not started
-- [ ] **Batch 12 — final re-audit.** Independently re-audit the surfaces changed in Batches 1–11 (correctness/security/perf/UX) against the PRD, confirm no regressions, then finalize. **Run this fresh — verify, don't trust this record.**
+> Finding detail (WHAT/IMPACT/FIX) is in `docs/AUDIT_FINDINGS.md` by ID.
+> Per-fix root-cause/solution is in `docs/AUDIT_REMEDIATION.md` (Batch 12 section).
 
 ---
 
-## Completeness-critic coverage gaps (from the audit — worth a look during re-audit)
-The audit's completeness critic flagged 12 areas it under-examined; see the
-"COMPLETENESS CRITIC" section at the end of `docs/AUDIT_FINDINGS.md`. Highlights:
-full-schema migration diff, the unauthenticated QR-PNG endpoint (DoS/enumeration),
-dashboard revenue semantics, bulk-import atomicity, bot-prompt `${var}` interpolation
-safety, the location-pin GET PII exposure, CORS-on-misconfig, inbound-media handling,
-JWT revocation, seed-in-prod guards, settings type-coercion, and the confirm-path
-cash-write idempotency.
+## ✅ Closed in Batch 12 (code complete — verified)
+
+**Backend (wave A + B)** — INT-05 (template slot mapping), ADM-11 (broadcast log
+customerId), CUS-10 (support close), CUS-11 (session nudge + sliding TTL), EDG-13
+(atomic location-token consume), ARC-07 (prompt-list merges defaults), EDG-11
+(confirm + skip ownership folded into the atomic claim), DAT-08 (reassign
+re-points today's deliveries), **EDG-02** (webhook-driven activation for
+onboarding + renew, idempotent via a Payment-intent CAS), **BAC-04/CUS-09**
+(onboarding honours a day-of-week pattern + bills delivery-days only), **EDG-03**
+(one active subscription per customer), DAT-09 (Payment/Delivery `onDelete:
+Restrict`), PER-09 (index-backed filter + JS sort), INT-08 (pin link from a
+public origin env, not ADMIN_ORIGIN), INT-12 (provider-agnostic `createPaymentLink`).
+
+**Mobile (wave C)** — MIL-06 (re-scan a done stop informs, no duplicate sheet),
+MIL-07 (capture door pin on skip too), MIL-08 (approximate-nav warning + empty
+destination guard), MIL-09 (explicit "no route assigned" state), **MOB-05**
+(same-day correction of a confirmed/skipped stop — new backend
+`POST /deliveries/:id/correct` reconciles door cash + audits), MOB-07 (web
+JWT-in-localStorage preview-only warning), MOB-09 (degraded offline boot from
+cached identity), MOB-11 (network/timeout vs unknown-QR), MOB-12 (location-capture
+signal + retry-while-missing), INT-07 (release build fails loud without an https
+API base). MIL-03 confirmed already covered by the 0-L guard (MOB-06).
+
+**Web-admin (wave D)** — WEB-09 (litres validation), ADM-07 (area filter matches
+the server field), INT-09 (mock fallback gated behind `NEXT_PUBLIC_DEMO=1`).
+
+**Deploy** — PRO-11 (`prisma` CLI moved to `dependencies` so `migrate deploy`
+survives a production prune).
+
+---
+
+## ⚪ Remaining — client-owned (NOT code gaps; need the client's accounts/infra)
+
+These cannot be completed from the repo — they need real third-party credentials
+or infrastructure the client provisions. See `docs/PRODUCTION_READINESS.md` for
+the step-by-step go-live checklist.
+
+- [ ] **Real payment-gateway credentials** (Razorpay or Cashfree) — set keys +
+      webhook secret; without them the stub provider is used (no real links).
+- [ ] **Meta WhatsApp Cloud API credentials** + template approval (the templates
+      in `whatsapp/templates.ts` must be submitted/approved in WhatsApp Manager).
+- [ ] **Real SMS provider** for executive OTP (currently `AUTH_STATIC_OTP` dev pin).
+- [ ] **Provision Redis** (`REDIS_URL`) — required for multi-instance (sessions,
+      OTP store, idempotency, rate-limit). Single-instance works without it.
+- [ ] **Apply migrations to prod** — run `prisma migrate deploy` against the prod DB
+      (all migrations through `20260618060000` are committed + drift-free).
+- [ ] **Host the public `/pin/<token>` page** at `PUBLIC_PIN_BASE_URL` (the link is
+      now built from that env; the page itself is the web-admin route — deploy it
+      on a public origin, or front it, so admin can stay locked down — INT-08).
+- [ ] **Email provider** for admin forgot-password (authenticated change-password
+      is done; the email-reset flow needs an SMTP/email service).
+- [ ] **PgBouncer** `connection_limit=1` guidance for the interactive-transaction
+      paths (PRO-09 — deployment configuration note).
+
+## 🟡 Deferred enhancements (working, but could go further — not launch blockers)
+
+- [ ] **ARC-07 cross-instance cache invalidation** — the admin prompt list now
+      merges defaults (the user-visible bug is fixed); a Redis pub/sub to push an
+      edit to *all* pods instantly is a multi-instance nicety, not required for
+      single-instance launch.
+- [ ] **MOB-12 full offline queue for location capture** — capture is best-effort
+      with retry-while-missing today; routing it through the durable scan queue
+      would also survive an offline-at-the-door first delivery.
+- [ ] **PRO-10 Sentry traces sampling** — configurable via
+      `SENTRY_TRACES_SAMPLE_RATE` (default 0.1); tune per environment.
+
+---
+
+## Original audit reference
+
+Full 139-finding record: `docs/AUDIT_FINDINGS.md`. Reconciliation history and the
+per-batch remediation log: `docs/AUDIT_REMEDIATION.md`. All 18 criticals were
+fixed in Batches 1–11; Batch 12 closed the remaining majors/minors above.

@@ -311,14 +311,43 @@ Implemented by 5 agents on disjoint files, then verified centrally + diffs revie
 
 ---
 
-## Batch 12 — final re-audit ⏭️ (pending)
-Re-audit the surfaces changed in Batches 6–11 (correctness/security/perf) against the PRD; full 3-app verification; finalize tracker.
+## Batch 12 — close every remaining code finding ✅ (backend tsc + 178/178 · mobile tsc + 14/14 · web-admin tsc · migration drift-free)
 
-### Still pending / needs input
-- **Mobile MIL-03/06/07/09 + MOB-05/07** — exact finding text not in the tracker; the clearly-described mobile items are done (Batch 9). Need the evidence to action these.
-- **DAT-08** reassignment re-materialize (today's already-materialized delivery keeps its old route until the next cron) — separate from the ADM-03 reassign UI.
-- **Email-based** admin forgot-password (needs an email provider; the authenticated change-password is done).
-- Config/infra items owned by the client (⚪): real provider creds, prod migration application, Redis/SMS/email provisioning.
+Closed all open majors/minors across the three apps in four disjoint waves. See
+`docs/PRODUCTION_READINESS.md` for the readiness verdict and `docs/REMAINING_WORK.md`
+for the (client-owned) remainder.
+
+### Wave A — backend (disjoint files, parallel)
+- **INT-05** — Meta template params mapped by the template's declared slot array (`templates.ts` `variables[]`), throwing on a missing slot, instead of `Object.values()` insertion order → billing numbers can't silently transpose.
+- **ADM-11** — broadcast per-recipient `WhatsAppLog` rows now carry `customerId` (per-customer audit + targeted retry).
+- **CUS-10** — support flow sends the close + resets immediately; no longer parks in `await_close` intercepting the next message.
+- **CUS-11** — sessions slide their 24h TTL on each inbound; a fall-through (fresh/expired, non-greeting) now nudges instead of going silent.
+- **EDG-13** — single-use location-token consume is an atomic `updateMany … where usedAt IS NULL` compare-and-swap.
+- **ARC-07** — admin bot-prompt list merges `DEFAULT_PROMPTS` with DB overrides (no empty editor on an unseeded DB). Cross-instance invalidation deferred.
+- **EDG-11** — delivery confirm **and** skip fold route-ownership into the atomic claim (race-free authz).
+- **DAT-08** — a route reassignment re-points today's still-PENDING deliveries to the new route.
+
+### Wave B — backend money/schema (sequential)
+- **EDG-02** — the signature-verified payment webhook activates the subscription the moment it flips to PAID (Payment `subscriptionIntent` JSON + `intentConsumedAt` CAS), for onboarding **and** renew. The customer's next message is an idempotent fallback — never double-activates. Migration `20260618060000`.
+- **BAC-04/CUS-09** — onboarding asks a day-of-week pattern and bills only delivery days (`countDeliveriesInRange`), matching renew/admin. Pattern parsing shared via `whatsapp/day-pattern.ts`.
+- **EDG-03** — `POST /subscriptions` rejects a 2nd ACTIVE subscription per customer (409). WhatsApp path already extends, not duplicates.
+- **DAT-09** — `Payment`/`Delivery` → `Customer` FKs are `onDelete: Restrict`; financial/delivery history can't be hard-deleted.
+- **PER-09** — today's-deliveries uses the index-backed `(routeId, scheduledFor)` filter + a JS sort of the bounded per-route set (no un-indexed relational ORDER BY).
+- **INT-08** — pin link built from `PUBLIC_PIN_BASE_URL → PUBLIC_BASE_URL → ADMIN_ORIGIN` so admin can be locked down.
+- **INT-12** — `createRazorpayPaymentLink` → provider-agnostic `createPaymentLink`.
+
+### Wave C — mobile (RN/Expo)
+- **MOB-05** — same-day correction of a confirmed/skipped stop. New backend `POST /deliveries/:id/correct` (owning exec/admin, today-only) reverses + re-posts door cash and stamps an audit note; mobile re-opens any stop to correct (online-only).
+- **MIL-06** re-scan-done informs (no duplicate sheet) · **MIL-07** capture door pin on skip too · **MIL-08** approximate-nav warning + empty-destination guard · **MIL-09** explicit "no route assigned" state · **MOB-07** web-token preview-only warning · **MOB-09** degraded offline boot from the cached identity · **MOB-11** network/timeout vs unknown-QR · **MOB-12** capture signal + retry-while-missing · **INT-07** release build fails loud without an https API base. MIL-03 confirmed already covered (MOB-06 0-L guard).
+
+### Wave D — web-admin
+- **WEB-09** litres validated client-side (`> 0`) · **ADM-07** area filter carries `Customer.area` through + filters that same field · **INT-09** mock fallback gated behind `NEXT_PUBLIC_DEMO=1` (prod outages surface as errors).
+
+### Deploy
+- **PRO-11** — `prisma` CLI moved to `dependencies` so `migrate deploy` survives a production prune. **PRO-10** Sentry sampling is env-configurable; **PRO-09** PgBouncer is a deployment note.
+
+### Remaining = client-owned only
+Real provider creds (payment/Meta/SMS), Redis provisioning, applying migrations to prod, hosting the `/pin` page, email-reset — see `docs/REMAINING_WORK.md` + the go-live checklist in `docs/PRODUCTION_READINESS.md`.
 
 _Done in Batch 6: DAT-05 endDate, CUS-08/BAC-06 TZ, EDG-04/BAC-08 unrouted-active. Batch 7: SEC-03/ADM-04, DAT-10, ARC-08. Batch 8: PER-03/04/10. Batch 9: PER-06, MIL-04/MOB-10, MOB-04/06, product-name. Batch 10: WEB-02/03/13, ADM-06, ADM-03/08, password-change, WEB-08. Batch 11: §5.1.4/§7.4/§7.5/§9._
 

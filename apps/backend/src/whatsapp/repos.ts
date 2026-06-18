@@ -23,6 +23,7 @@ import {
   RENEWAL_REMINDER_DAYS_BEFORE,
 } from '../constants';
 import { prisma } from '../prisma';
+import { startOfBusinessDayUTC } from '../utils/dates';
 import { nextCustomerCode } from '../services/customer-code';
 import { buildVersionedQrPayload, generateQrDataUrl } from '../services/qrcode';
 import { settings } from '../services/settings';
@@ -72,7 +73,11 @@ export const prismaBotRepos: BotRepos = {
           addressLine1: input.addressLine1,
           litresPerDay: input.litresPerDay,
           qrCodeUrl,
-          status: CustomerStatus.ACTIVE,
+          // ARC-08: onboarding customers start PENDING (a lead) and are
+          // promoted to ACTIVE by activateSubscription once payment is
+          // confirmed. An abandoned onboarding therefore stays PENDING instead
+          // of polluting the ACTIVE roster/counts with a sub-less "customer".
+          status: CustomerStatus.PENDING,
         },
       });
       await tx.qrCode.create({
@@ -249,6 +254,14 @@ export const prismaBotRepos: BotRepos = {
 
     const start = new Date(input.startDate);
     const end = new Date(input.endDate);
+    // Guard against overlapping pauses (audit EDG-08): a duplicate/concurrent
+    // pause would create a second PauseRecord + AutoResumeJob and corrupt the
+    // resume timing. If a pause already covers any of this window, no-op.
+    const overlap = await prisma.pauseRecord.findFirst({
+      where: { subscriptionId: sub.id, startDate: { lte: end }, endDate: { gte: start } },
+    });
+    if (overlap) return;
+
     const resumeDate = new Date(end);
     resumeDate.setUTCDate(resumeDate.getUTCDate() + 1);
 
@@ -280,8 +293,8 @@ export const prismaBotRepos: BotRepos = {
   },
 
   async resumeSubscription(customerId) {
-    const today = new Date();
-    const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    // Business-day (IST) midnight, not UTC-date-of-now (audit BAC-06).
+    const todayUtc = startOfBusinessDayUTC();
     await prisma.$transaction(async (tx) => {
       const sub = await tx.subscription.findFirst({
         where: { customerId, status: SubscriptionStatus.PAUSED },
@@ -319,7 +332,12 @@ export const prismaBotRepos: BotRepos = {
   },
 
   async getActivePause(customerId) {
-    const today = new Date();
+    // Compare against the BUSINESS-day boundary (IST midnight), not the raw UTC
+    // instant. Pause dates are stored as UTC-midnight date-only values, so
+    // `endDate >= new Date()` made a pause ending today look already-over for
+    // the whole final IST day (00:00 UTC < mid-morning UTC) — the resume flow
+    // then reported "no active pause" on the last day (audit BAC-06).
+    const today = startOfBusinessDayUTC();
     const pause = await prisma.pauseRecord.findFirst({
       where: {
         customerId,

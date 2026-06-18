@@ -14,6 +14,14 @@ import {
   DEFAULT_RATE_PER_LITRE_INR,
   DEFAULT_SUBSCRIPTION_DAYS,
 } from '../../constants';
+// BAC-03: use the EXACT calendar delivery counter (same one the scheduler/
+// materializer uses) instead of the round(duration*dow/7) approximation, so
+// the charged amount equals the deliveries actually delivered.
+import {
+  countDeliveriesInRange,
+  type WeekdayNumber,
+} from '../../services/subscription-calc';
+import { startOfBusinessDayUTC } from '../../utils/dates';
 
 interface RenewCtx {
   litresPerDay?: number;
@@ -66,7 +74,19 @@ export const renewFlow: FlowHandler = {
 
     switch (ctx.state.step) {
       case 'ask_days': {
+        // CUS-07: distinguish "unparseable" from a valid pattern. On unknown
+        // input we re-prompt instead of silently defaulting to Mon–Sat (which
+        // would charge the wrong amount for what the customer actually meant).
         const dow = parseDaysOfWeek(text);
+        if (!dow) {
+          ctx.send({
+            kind: 'template',
+            to: phone,
+            templateName: TEMPLATES.renew_ask_days.name,
+            variables: { litres_per_day: String(slot.litresPerDay ?? 1) },
+          });
+          return;
+        }
         // Prefer real subscription data over slot defaults
         const sub = ctx.state.customerId
           ? await ctx.repos.getActiveSubscription(ctx.state.customerId)
@@ -74,7 +94,11 @@ export const renewFlow: FlowHandler = {
         const litres = sub?.litresPerDay ?? slot.litresPerDay ?? 1;
         const rate = sub?.ratePerLitre ?? DEFAULT_RATE_PER_LITRE_INR;
         const duration = DEFAULT_SUBSCRIPTION_DAYS;
-        const deliveries = countDeliveries(dow, duration);
+        // BAC-03: exact calendar count over the real renewal window
+        // (startDate=startOfBusinessDayUTC(today) .. +duration days), so the
+        // amount charged equals the deliveries the scheduler will produce.
+        const startDate = startOfBusinessDayUTC();
+        const deliveries = countDeliveriesInRange(startDate, duration, dow);
         const total = Math.round(deliveries * litres * rate);
 
         const link = await ctx.repos.createPaymentLink({
@@ -99,7 +123,9 @@ export const renewFlow: FlowHandler = {
           to: phone,
           templateName: TEMPLATES.renew_quote.name,
           variables: {
-            day_pattern: text,
+            // CUS-07: normalized human label from the PARSED days, not the raw
+            // user text — so the quote reads "Mon–Sat"/"Every day" etc.
+            day_pattern: formatDayPattern(dow),
             duration_days: String(duration),
             delivery_count: String(deliveries),
             litres_per_day: String(litres),
@@ -146,17 +172,38 @@ export const renewFlow: FlowHandler = {
   },
 };
 
-function parseDaysOfWeek(text: string): number[] {
+/**
+ * Parse the customer's free-text day pattern into a sorted weekday list.
+ *
+ * CUS-07: returns `null` for unrecognized input so the caller can re-prompt
+ * instead of silently defaulting to Mon–Sat and charging the wrong amount.
+ */
+function parseDaysOfWeek(text: string): WeekdayNumber[] | null {
   const lower = text.toLowerCase();
-  if (lower.includes('all') || lower.includes('every')) return [0, 1, 2, 3, 4, 5, 6];
-  if (lower.includes('mon-sat') || lower.includes('mon–sat')) return [1, 2, 3, 4, 5, 6];
+  if (lower.includes('all') || lower.includes('every') || lower.includes('daily')) {
+    return [0, 1, 2, 3, 4, 5, 6];
+  }
+  if (lower.includes('mon-sat') || lower.includes('mon–sat') || lower.includes('mon to sat')) {
+    return [1, 2, 3, 4, 5, 6];
+  }
   if (lower.includes('weekday')) return [1, 2, 3, 4, 5];
   if (lower.includes('weekend')) return [0, 6];
-  return [1, 2, 3, 4, 5, 6]; // sensible default
+  return null; // unparseable — caller re-prompts
 }
 
-function countDeliveries(daysOfWeek: number[], durationDays: number): number {
-  // Approx: number of matching weekdays in the next `durationDays` days.
-  const weekRatio = daysOfWeek.length / 7;
-  return Math.round(durationDays * weekRatio);
+/**
+ * CUS-07: render a normalized human label for a parsed weekday list, so the
+ * renew_quote template shows a clean pattern ("Every day", "Mon–Sat",
+ * "Weekdays", "Weekends") rather than echoing the raw user text. Falls back
+ * to a short comma list of weekday abbreviations for any other combination.
+ */
+function formatDayPattern(daysOfWeek: WeekdayNumber[]): string {
+  const sorted = [...daysOfWeek].sort((a, b) => a - b);
+  const key = sorted.join(',');
+  if (key === '0,1,2,3,4,5,6') return 'Every day';
+  if (key === '1,2,3,4,5,6') return 'Mon–Sat';
+  if (key === '1,2,3,4,5') return 'Weekdays';
+  if (key === '0,6') return 'Weekends';
+  const NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return sorted.map((d) => NAMES[d]).join(', ');
 }

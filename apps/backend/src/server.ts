@@ -21,6 +21,7 @@ import { ZodError } from 'zod';
 
 import { loadConfig } from './config';
 import { buildLogStreams } from './log-streams';
+import { getRedisOptional } from './redis';
 import type { App } from './types';
 import { registerAuthRoutes, registerAuthDecorators } from './modules/auth';
 import { registerCustomerRoutes } from './modules/customers';
@@ -119,9 +120,15 @@ export async function buildServer(opts: BuildOptions = {}): Promise<App> {
   });
 
   if (opts.rateLimited !== false) {
+    // Back the limiter with Redis when available so per-IP limits hold ACROSS
+    // instances and survive restarts (audit SEC-05/ARC-01: a per-process LRU
+    // gave an attacker N× the attempts behind an N-pod load balancer and reset
+    // every deploy). Falls back to the in-process store when REDIS_URL is unset.
+    const redis = getRedisOptional();
     await app.register(rateLimit, {
       max: 200,
       timeWindow: '1 minute',
+      ...(redis ? { redis } : {}),
     });
   }
 

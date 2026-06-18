@@ -14,11 +14,12 @@
 
 import type { App } from '../../types';
 import { z } from 'zod';
-import { BroadcastStatus, BroadcastTarget, CustomerStatus } from '@prisma/client';
+import { BroadcastStatus, BroadcastTarget } from '@prisma/client';
 
 import { prisma } from '../../prisma';
-import { sender } from '../../whatsapp/sender';
 import { TEMPLATES } from '../../whatsapp/templates';
+import { isJobsEnabled, getQueue, QUEUE_NAMES } from '../../jobs/queue';
+import { runBroadcastSendOnce } from '../../jobs/scheduled-broadcasts';
 
 const CreateBody = z.object({
   message: z.string().min(1).max(1024),
@@ -27,33 +28,10 @@ const CreateBody = z.object({
   scheduledFor: z.coerce.date().optional(),
 });
 
-/**
- * Resolve a broadcast's audience into a flat list of phones.
- *
- * Supported targets:
- *   ALL     — every active customer
- *   ROUTES  — every active customer on one of the given route ids
- *
- * NOT YET WIRED (the validator rejects it before we get here):
- *   CUSTOMERS — per-customer targeting. Schema needs a customerIds array
- *               (or BroadcastCustomer join) before this can be supported.
- *               The enum value stays so we can land the feature without a
- *               schema enum migration.
- */
-async function resolveRecipientPhones(
-  target: BroadcastTarget,
-  routeIds: string[],
-): Promise<string[]> {
-  const where: Record<string, unknown> = { status: CustomerStatus.ACTIVE };
-  if (target === BroadcastTarget.ROUTES && routeIds.length > 0) {
-    where.routeId = { in: routeIds };
-  }
-  const customers = await prisma.customer.findMany({
-    where,
-    select: { phone: true },
-  });
-  return customers.map((c) => c.phone);
-}
+// Audience resolution + the per-recipient send pipeline now live in
+// jobs/scheduled-broadcasts.ts (runBroadcastSendOnce). POST /:id/send
+// only ENQUEUES the work (audit ARC-04) so the HTTP request returns
+// immediately instead of blocking on a 400+ recipient blast.
 
 export async function registerBroadcastRoutes(app: App) {
   // Admin-only — sending a broadcast is sending a marketing/utility
@@ -131,89 +109,47 @@ export async function registerBroadcastRoutes(app: App) {
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
 
-      // Atomic claim: only one caller can flip DRAFT/SCHEDULED → SENDING.
-      // Without this, a double-click on "Send" (or two admins clicking
-      // at the same time) double-fires the entire blast. Blocks SENT and
-      // SENDING — the previous code only blocked SENT, leaving a fresh
-      // re-fire path while the first one was still in flight.
-      const claim = await prisma.broadcast.updateMany({
-        where: {
-          id,
-          status: { in: [BroadcastStatus.DRAFT, BroadcastStatus.SCHEDULED] },
-        },
-        data: { status: BroadcastStatus.SENDING },
-      });
-      if (claim.count !== 1) {
-        const current = await prisma.broadcast.findUnique({ where: { id } });
-        if (!current) return reply.status(404).send({ error: 'NotFound' });
+      // Validate the row is in a sendable state up front so we still
+      // return the same 404 / 409 the synchronous handler did. We do NOT
+      // claim → SENDING here: the actual claim (DRAFT/SCHEDULED → SENDING)
+      // happens inside runBroadcastSendOnce so the background worker — or
+      // the inline fallback below — owns the whole atomic pipeline. A
+      // double-click is still safe: the worker's updateMany claim returns
+      // count!==1 for the second run and no-ops.
+      const current = await prisma.broadcast.findUnique({ where: { id } });
+      if (!current) return reply.status(404).send({ error: 'NotFound' });
+      if (
+        current.status !== BroadcastStatus.DRAFT &&
+        current.status !== BroadcastStatus.SCHEDULED
+      ) {
         return reply.status(409).send({
           error: 'InvalidStateTransition',
           message: `Broadcast is ${current.status}; only DRAFT or SCHEDULED can be sent.`,
         });
       }
 
-      const b = await prisma.broadcast.findUnique({
-        where: { id },
-        include: { routes: true },
-      });
-      if (!b) return reply.status(404).send({ error: 'NotFound' });
-
-      const phones = await resolveRecipientPhones(
-        b.target,
-        b.routes.map((r) => r.routeId),
-      );
-
-      let delivered = 0;
-      let failed = 0;
-      for (const phone of phones) {
-        try {
-          await sender.send({
-            kind: 'template',
-            to: phone,
-            templateName: TEMPLATES.broadcast_route_update.name,
-            variables: { message_body: b.message },
-          });
-          // Persist per-recipient row so admins can investigate
-          // exactly who got it. The previous code aggregated to
-          // delivered/failed counts only, with no way to retry the
-          // failed ones or audit a specific customer's complaint.
-          await prisma.whatsAppLog.create({
-            data: {
-              phone,
-              direction: 'OUTBOUND',
-              templateId: TEMPLATES.broadcast_route_update.name,
-              category: 'MARKETING',
-              body: b.message.slice(0, 500),
-              status: 'sent',
-            },
-          }).catch(() => undefined);
-          delivered += 1;
-        } catch {
-          failed += 1;
-          await prisma.whatsAppLog.create({
-            data: {
-              phone,
-              direction: 'OUTBOUND',
-              templateId: TEMPLATES.broadcast_route_update.name,
-              category: 'MARKETING',
-              body: b.message.slice(0, 500),
-              status: 'failed',
-            },
-          }).catch(() => undefined);
-        }
+      // audit ARC-04/INT-03/PER-05: offload the per-recipient blast to the
+      // background queue so the HTTP request returns immediately instead of
+      // looping every (potentially 400+) recipient inline — which timed out
+      // and left the broadcast wedged in SENDING.
+      if (isJobsEnabled()) {
+        await getQueue(QUEUE_NAMES.broadcastSend).add(
+          'send',
+          { broadcastId: id },
+          { removeOnComplete: true, removeOnFail: 50 },
+        );
+        // 202 Accepted: the work is queued, not done. Shape stays
+        // compatible — the admin UI reads { id, status } off the row.
+        const queued = await prisma.broadcast.findUnique({ where: { id } });
+        return reply.status(202).send(queued);
       }
 
-      const updated = await prisma.broadcast.update({
-        where: { id },
-        data: {
-          status: failed === phones.length && phones.length > 0
-            ? BroadcastStatus.FAILED
-            : BroadcastStatus.SENT,
-          sentCount: phones.length,
-          deliveredCount: delivered,
-          failedCount: failed,
-        },
-      });
+      // Interval/no-Redis mode: no queue to enqueue onto, so run the
+      // pipeline inline. runBroadcastSendOnce performs its own atomic
+      // claim + finalizes counts/status; return the updated row.
+      await runBroadcastSendOnce(id);
+      const updated = await prisma.broadcast.findUnique({ where: { id } });
+      if (!updated) return reply.status(404).send({ error: 'NotFound' });
       return updated;
     },
   });

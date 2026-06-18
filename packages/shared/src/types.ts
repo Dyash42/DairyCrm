@@ -12,7 +12,9 @@ export type DeliveryId = string;
 export type BroadcastId = string;
 
 // ---------- Customer ----------
-export type CustomerStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED';
+// 'PENDING' = an onboarding lead not yet paid (audit ARC-08); promoted to
+// ACTIVE on payment. Distinct from PAUSED/CANCELLED.
+export type CustomerStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'PENDING';
 
 export interface Customer {
   id: CustomerId;
@@ -115,7 +117,15 @@ export interface DashboardMetrics {
   completionPct: number;
   completionDeltaPct: number;
   hourlyDelivery: Array<{ hour: number; litres: number }>;
-  breakdown: { pending: number; missed: number; paused: number; newToday: number };
+  breakdown: {
+    pending: number;
+    missed: number;
+    paused: number;
+    newToday: number;
+    /** Active customers with an active sub but no route — never delivered/billed
+     *  until assigned (audit EDG-04/BAC-08). Optional for back-compat. */
+    unroutedActive?: number;
+  };
   byRoute: Array<{ routeName: string; litres: number; completionPct: number }>;
   subscriptions: { active: number; paused: number; cancelled: number; total: number };
 }

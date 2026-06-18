@@ -19,7 +19,7 @@ import { PaymentMode, PaymentStatus } from '@prisma/client';
 
 import { prisma } from '../../prisma';
 import { getPaymentProvider } from '../../providers/payment';
-import { notFound } from '../../utils/http';
+import { notFound, isUniqueConstraintError } from '../../utils/http';
 
 const RecordBody = z.object({
   customerId: z.string(),
@@ -180,40 +180,52 @@ export async function registerPaymentRoutes(app: App) {
       const customer = await prisma.customer.findUnique({ where: { id: body.customerId } });
       if (!customer) return notFound(reply, 'Customer');
 
-      const payment = await prisma.$transaction(async (tx) => {
-        // Idempotency guard (audit ADM-10/EDG-15): a double-clicked "Record
-        // payment" or a client retry would otherwise create a second PAID row
-        // and credit the customer's balance twice. Treat a same
-        // customer/amount/mode PAID payment recorded in the last 60 seconds as
-        // the same submission and return it without re-crediting.
-        const recent = await tx.payment.findFirst({
-          where: {
-            customerId: body.customerId,
-            amount: body.amount,
-            mode: body.mode,
-            status: PaymentStatus.PAID,
-            createdAt: { gte: new Date(Date.now() - 60_000) },
-          },
-          orderBy: { createdAt: 'desc' },
+      try {
+        const payment = await prisma.$transaction(async (tx) => {
+          // Idempotency guard (audit ADM-10/EDG-15): a double-clicked "Record
+          // payment" or a client retry would otherwise create a second PAID row
+          // and credit the customer's balance twice. Treat a same
+          // customer/amount/mode PAID payment recorded in the last 60 seconds as
+          // the same submission and return it without re-crediting.
+          const recent = await tx.payment.findFirst({
+            where: {
+              customerId: body.customerId,
+              amount: body.amount,
+              mode: body.mode,
+              status: PaymentStatus.PAID,
+              createdAt: { gte: new Date(Date.now() - 60_000) },
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (recent) return recent;
+          const p = await tx.payment.create({
+            data: {
+              customerId: body.customerId,
+              amount: body.amount,
+              mode: body.mode,
+              reference: body.reference,
+              status: PaymentStatus.PAID,
+              paidAt: body.paidAt ?? new Date(),
+            },
+          });
+          await tx.customer.update({
+            where: { id: body.customerId },
+            data: { balance: { increment: body.amount } },
+          });
+          return p;
         });
-        if (recent) return recent;
-        const p = await tx.payment.create({
-          data: {
-            customerId: body.customerId,
-            amount: body.amount,
-            mode: body.mode,
-            reference: body.reference,
-            status: PaymentStatus.PAID,
-            paidAt: body.paidAt ?? new Date(),
-          },
-        });
-        await tx.customer.update({
-          where: { id: body.customerId },
-          data: { balance: { increment: body.amount } },
-        });
-        return p;
-      });
-      return reply.status(201).send(payment);
+        return reply.status(201).send(payment);
+      } catch (e) {
+        // DAT-10: a duplicate reference now hits the UNIQUE(reference)
+        // constraint — surface a clean 409 instead of a 500.
+        if (isUniqueConstraintError(e)) {
+          return reply.status(409).send({
+            error: 'DuplicateReference',
+            message: 'A payment with this reference already exists.',
+          });
+        }
+        throw e;
+      }
     },
   });
 }

@@ -48,30 +48,33 @@ export async function runAutoResumeOnce(now: Date = new Date()): Promise<{
   let resumed = 0;
   let failed = 0;
   for (const job of due) {
-    // Atomic claim — only one parallel worker will succeed.
-    const claim = await prisma.autoResumeJob.updateMany({
-      where: { id: job.id, status: AutoResumeStatus.PENDING },
-      data: { status: AutoResumeStatus.RESUMED, resumedAt: new Date() },
-    });
-    if (claim.count === 0) continue;
-
-    // Guard: if the subscription's own endDate already passed while it was
-    // paused, do NOT resurrect it to ACTIVE (that would schedule deliveries
-    // for an expired, unpaid subscription). Cancel it instead and skip the
-    // resume reminder — the customer must renew.
     const sub = job.pauseRecord.subscription;
-    if (sub.endDate && sub.endDate < startOfBusinessDayUTC(now)) {
-      await prisma.subscription
-        .updateMany({
-          where: { id: sub.id, status: SubscriptionStatus.PAUSED },
-          data: { status: SubscriptionStatus.CANCELLED },
-        })
-        .catch(() => undefined);
-      continue;
-    }
+    const expired = Boolean(sub.endDate && sub.endDate < startOfBusinessDayUTC(now));
 
+    // Claim AND activate in ONE transaction (audit ARC-06/EDG-12). Previously
+    // the job was marked RESUMED first, then the activation ran separately — a
+    // crash in between left the job RESUMED while the subscription stayed
+    // PAUSED, so it was never retried and the customer was stuck paused
+    // forever. Now: the atomic claim (updateMany on PENDING) is the
+    // concurrency guard, and if the transaction rolls back the job stays
+    // PENDING and retries next tick.
+    let claimed = false;
     try {
       await prisma.$transaction(async (tx) => {
+        const claim = await tx.autoResumeJob.updateMany({
+          where: { id: job.id, status: AutoResumeStatus.PENDING },
+          data: { status: AutoResumeStatus.RESUMED, resumedAt: new Date() },
+        });
+        if (claim.count === 0) return; // another worker already claimed it
+        claimed = true;
+        if (expired) {
+          // Don't resurrect an expired sub — cancel instead (no reminder).
+          await tx.subscription.updateMany({
+            where: { id: sub.id, status: SubscriptionStatus.PAUSED },
+            data: { status: SubscriptionStatus.CANCELLED },
+          });
+          return;
+        }
         await tx.subscription.update({
           where: { id: job.pauseRecord.subscriptionId },
           data: { status: SubscriptionStatus.ACTIVE },
@@ -81,36 +84,33 @@ export async function runAutoResumeOnce(now: Date = new Date()): Promise<{
           data: { status: CustomerStatus.ACTIVE },
         });
       });
+    } catch (err) {
+      // Activation rolled back → job is still PENDING and will retry next tick.
+      failed += 1;
+      await captureException(err, { jobId: job.id });
+      continue;
+    }
 
+    if (!claimed || expired) continue;
+
+    // Best-effort reminder AFTER the resume is committed. A send failure must
+    // NOT revert the resume — the customer IS active; just log it so the
+    // message can be retried separately (audit ARC-06: send error used to flip
+    // an already-successful resume to FAILED).
+    try {
       await sender.send({
         kind: 'template',
         to: job.pauseRecord.customer.phone,
         templateName: TEMPLATES.auto_resume_reminder.name,
         variables: {
           name: job.pauseRecord.customer.name.split(' ')[0] ?? 'there',
-          litres_per_day: String(
-            Number(job.pauseRecord.subscription.litresPerDay),
-          ),
+          litres_per_day: String(Number(job.pauseRecord.subscription.litresPerDay)),
         },
       });
-      resumed += 1;
     } catch (err) {
-      failed += 1;
-      // Roll the job back to FAILED so it doesn't loop on PENDING forever
-      // (subscription/customer may have been partially updated — admin
-      // sees FAILED + lastError and can retry from the admin UI).
-      await prisma.autoResumeJob
-        .updateMany({
-          where: { id: job.id, status: AutoResumeStatus.RESUMED },
-          data: {
-            status: AutoResumeStatus.FAILED,
-            attempts: { increment: 1 },
-            lastError: err instanceof Error ? err.message.slice(0, 500) : String(err),
-          },
-        })
-        .catch(() => undefined);
-      await captureException(err, { jobId: job.id });
+      await captureException(err, { jobId: job.id, stage: 'reminder' });
     }
+    resumed += 1;
   }
   return { picked: due.length, resumed, failed };
 }

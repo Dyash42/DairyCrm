@@ -79,7 +79,37 @@ export async function registerRouteRoutes(app: App) {
         },
       });
       if (!route) return reply.status(404).send({ error: 'NotFound' });
-      return route;
+
+      // PRD §5.1.4: surface the recent reassignment history (most recent
+      // first), resolving executive ids to names for display.
+      const history = await prisma.routeAssignment.findMany({
+        where: { routeId: id },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      });
+      const execIds = Array.from(
+        new Set(
+          history
+            .flatMap((h) => [h.executiveId, h.previousExecutiveId])
+            .filter((x): x is string => !!x),
+        ),
+      );
+      const execs = execIds.length
+        ? await prisma.executive.findMany({
+            where: { id: { in: execIds } },
+            include: { user: { select: { name: true } } },
+          })
+        : [];
+      const execName = new Map(execs.map((e) => [e.id, e.user.name]));
+      const assignmentHistory = history.map((h) => ({
+        id: h.id,
+        at: h.createdAt.toISOString(),
+        executive: h.executiveId ? execName.get(h.executiveId) ?? 'Unknown' : null,
+        previousExecutive: h.previousExecutiveId
+          ? execName.get(h.previousExecutiveId) ?? 'Unknown'
+          : null,
+      }));
+      return { ...route, assignmentHistory };
     },
   });
 
@@ -157,6 +187,7 @@ export async function registerRouteRoutes(app: App) {
       try {
         await prisma.$transaction(async (tx) => {
           const prev = await tx.executive.findFirst({ where: { routeId: id } });
+          const prevId = prev?.id ?? null;
           if (prev && prev.id !== executiveId) {
             await tx.executive.update({
               where: { id: prev.id },
@@ -169,6 +200,18 @@ export async function registerRouteRoutes(app: App) {
             await tx.executive.update({
               where: { id: executiveId },
               data: { routeId: id },
+            });
+          }
+          // PRD §5.1.4: append to the route↔executive reassignment history,
+          // atomically with the change, but only when it actually changed.
+          if (prevId !== (executiveId ?? null)) {
+            await tx.routeAssignment.create({
+              data: {
+                routeId: id,
+                executiveId: executiveId ?? null,
+                previousExecutiveId: prevId,
+                changedBy: req.user.sub,
+              },
             });
           }
         });

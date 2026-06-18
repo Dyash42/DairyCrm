@@ -6,21 +6,13 @@
  */
 
 import { Queue, Worker } from 'bullmq';
-import IORedis from 'ioredis';
 
 import { loadConfig } from '../config';
+import { captureException } from '../observability';
+import { closeRedis, getRedis } from '../redis';
 
-let redis: IORedis | null = null;
-
-export function getRedis(): IORedis {
-  if (redis) return redis;
-  const url = loadConfig().REDIS_URL;
-  if (!url) {
-    throw new Error('REDIS_URL is required for background jobs');
-  }
-  redis = new IORedis(url, { maxRetriesPerRequest: null });
-  return redis;
-}
+// Re-exported for back-compat with existing job imports.
+export { getRedis } from '../redis';
 
 export function isJobsEnabled(): boolean {
   return Boolean(loadConfig().REDIS_URL);
@@ -62,7 +54,12 @@ export function getQueue(name: QueueName): Queue {
   return q;
 }
 
-/** Spawn a worker for a queue. Caller owns the lifecycle. */
+// Track every spawned worker so shutdown can drain + close them BEFORE the
+// shared Redis connection is quit (audit PRO-02: SIGTERM never closed the
+// workers and quit Redis out from under in-flight jobs).
+const workers: Worker[] = [];
+
+/** Spawn a worker for a queue. Lifecycle is managed via closeWorkers(). */
 export function spawnWorker<T = unknown>(
   name: QueueName,
   handler: (job: { data: T }) => Promise<void>,
@@ -72,10 +69,31 @@ export function spawnWorker<T = unknown>(
     connection: getRedis(),
     concurrency: opts.concurrency ?? 5,
   };
-  return new Worker<T>(name, handler as never, workerOpts as never);
+  const w = new Worker<T>(name, handler as never, workerOpts as never);
+  // Attach error/failed listeners (audit PRO-06): an unhandled 'error' event
+  // can crash the process, and silent 'failed' jobs hid Redis disconnects +
+  // cron failures from any alerting.
+  w.on('error', (err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[worker:${name}] error`, err instanceof Error ? err.message : err);
+    void captureException(err, { queue: name });
+  });
+  w.on('failed', (job: { id?: string } | undefined, err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[worker:${name}] job failed`, err instanceof Error ? err.message : err);
+    void captureException(err, { queue: name, jobId: job?.id });
+  });
+  workers.push(w as Worker);
+  return w;
+}
+
+/** Gracefully drain + close all workers (call before closeAllQueues). */
+export async function closeWorkers(): Promise<void> {
+  await Promise.all(workers.map((w) => w.close()));
+  workers.length = 0;
 }
 
 export async function closeAllQueues(): Promise<void> {
   for (const q of queues.values()) await q.close();
-  if (redis) await redis.quit();
+  await closeRedis();
 }

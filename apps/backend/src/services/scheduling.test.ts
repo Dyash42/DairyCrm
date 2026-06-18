@@ -6,6 +6,7 @@ import {
   type ScheduleSubscription,
   type SchedulePause,
 } from './scheduling';
+import { calculateQuote } from './subscription-calc';
 
 const utc = (s: string) => new Date(s + 'T00:00:00.000Z');
 
@@ -45,6 +46,7 @@ const baseSub = (overrides: Partial<ScheduleSubscription> = {}): ScheduleSubscri
   id: 's1',
   customerId: 'c1',
   routeId: 'r1',
+  productId: 'p1',
   litresPerDay: 1,
   ratePerLitre: 64,
   daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
@@ -123,7 +125,11 @@ describe('getDeliveriesForDate', () => {
     expect(out[0]?.customerId).toBe('c2');
   });
 
-  it('respects subscription start/end window', async () => {
+  it('respects subscription start/end window (endDate EXCLUSIVE — audit DAT-05)', async () => {
+    // endDate is the EXCLUSIVE renewal boundary (= startDate + durationDays),
+    // so the LAST delivery is the day before endDate. A [10 Jun, 20 Jun) window
+    // delivers 10..19 Jun and NOT on 20 Jun — matching what the customer is
+    // billed (10 deliveries), not 11.
     const repo = makeRepo({
       subs: [
         baseSub({
@@ -132,10 +138,48 @@ describe('getDeliveriesForDate', () => {
         }),
       ],
     });
-    expect(await getDeliveriesForDate(utc('2026-06-09'), repo)).toEqual([]);
-    expect(await getDeliveriesForDate(utc('2026-06-10'), repo)).toHaveLength(1);
-    expect(await getDeliveriesForDate(utc('2026-06-20'), repo)).toHaveLength(1);
-    expect(await getDeliveriesForDate(utc('2026-06-21'), repo)).toEqual([]);
+    expect(await getDeliveriesForDate(utc('2026-06-09'), repo)).toEqual([]); // before start
+    expect(await getDeliveriesForDate(utc('2026-06-10'), repo)).toHaveLength(1); // start = first delivery
+    expect(await getDeliveriesForDate(utc('2026-06-19'), repo)).toHaveLength(1); // last delivery
+    expect(await getDeliveriesForDate(utc('2026-06-20'), repo)).toEqual([]); // endDate itself: none (exclusive)
+    expect(await getDeliveriesForDate(utc('2026-06-21'), repo)).toEqual([]); // after
+  });
+
+  it('delivers exactly `durationDays` deliveries == the billed quote (audit DAT-05)', async () => {
+    // The invariant that closes DAT-05: for the SAME (startDate, durationDays,
+    // daysOfWeek), the number of days the scheduler delivers over the stored
+    // window [startDate, startDate + durationDays) must equal
+    // calculateQuote(...).deliveryCount — i.e. the customer is billed for
+    // exactly what they receive. Verified for EVERY_DAY (30) and MON_TO_SAT (26).
+    const start = utc('2026-06-01');
+    for (const { dow, expected } of [
+      { dow: [0, 1, 2, 3, 4, 5, 6], expected: 30 },
+      { dow: [1, 2, 3, 4, 5, 6], expected: 26 },
+    ]) {
+      const durationDays = 30;
+      const endDate = new Date(start);
+      endDate.setUTCDate(endDate.getUTCDate() + durationDays);
+      const repo = makeRepo({
+        subs: [baseSub({ daysOfWeek: dow, startDate: start, endDate })],
+      });
+      // Count delivering days across a generous span that fully contains the window.
+      let delivered = 0;
+      for (let i = -1; i <= durationDays + 1; i++) {
+        const d = new Date(start);
+        d.setUTCDate(d.getUTCDate() + i);
+        delivered += (await getDeliveriesForDate(d, repo)).length;
+      }
+      // The pure billing math (subscription-calc) and the scheduler agree.
+      const billed = calculateQuote({
+        litresPerDay: 1,
+        ratePerLitre: 64,
+        daysOfWeek: dow as never,
+        startDate: start,
+        durationDays,
+      }).deliveryCount;
+      expect(delivered).toBe(expected);
+      expect(delivered).toBe(billed);
+    }
   });
 
   it('skips non-ACTIVE subscriptions even if the repo returned them', async () => {
@@ -148,11 +192,18 @@ describe('getDeliveriesForDate', () => {
 
 describe('groupByRoute', () => {
   it('groups by routeId and bucket unassigned to "unassigned"', () => {
+    const sd = (over: { customerId: string; routeId: string | null; litres: number }) => ({
+      subscriptionId: `sub-${over.customerId}`,
+      productId: 'p1',
+      ratePerLitre: 64,
+      date: utc('2026-06-02'),
+      ...over,
+    });
     const grouped = groupByRoute([
-      { customerId: 'c1', routeId: 'r1', litres: 1, ratePerLitre: 64, date: utc('2026-06-02') },
-      { customerId: 'c2', routeId: 'r1', litres: 2, ratePerLitre: 64, date: utc('2026-06-02') },
-      { customerId: 'c3', routeId: 'r2', litres: 1, ratePerLitre: 64, date: utc('2026-06-02') },
-      { customerId: 'c4', routeId: null, litres: 1, ratePerLitre: 64, date: utc('2026-06-02') },
+      sd({ customerId: 'c1', routeId: 'r1', litres: 1 }),
+      sd({ customerId: 'c2', routeId: 'r1', litres: 2 }),
+      sd({ customerId: 'c3', routeId: 'r2', litres: 1 }),
+      sd({ customerId: 'c4', routeId: null, litres: 1 }),
     ]);
     expect(grouped.get('r1')).toHaveLength(2);
     expect(grouped.get('r2')).toHaveLength(1);

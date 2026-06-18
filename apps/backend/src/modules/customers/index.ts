@@ -21,6 +21,8 @@ import {
   SubscriptionStatus,
   RenewalReminderStatus,
   DeliveryStatus,
+  PaymentStatus,
+  Prisma,
 } from '@prisma/client';
 
 import { prisma } from '../../prisma';
@@ -41,6 +43,11 @@ import { registerCustomerBulkRoutes } from './bulk';
 const ListQuery = z.object({
   status: z.nativeEnum(CustomerStatus).optional(),
   routeId: z.string().optional(),
+  // EDG-04/BAC-08: surface ACTIVE customers with an ACTIVE subscription but no
+  // route — they're billing-eligible yet never get a Delivery row (the
+  // materializer skips routeId === null), so they're silently undelivered +
+  // unbilled until assigned. `?unrouted=true` returns exactly that at-risk set.
+  unrouted: z.enum(['true', 'false']).optional(),
   // PRD §5.2: filter by area. Case-insensitive substring on Customer.area.
   area: z.string().trim().min(1).max(100).optional(),
   // Min length 3 — a 2-char query like '99' matched every customer
@@ -232,6 +239,12 @@ export async function registerCustomerRoutes(app: App) {
       const where: Record<string, unknown> = {};
       if (q.status) where.status = q.status;
       if (q.routeId) where.routeId = q.routeId;
+      if (q.unrouted === 'true') {
+        // The at-risk set (EDG-04/BAC-08): no route AND an ACTIVE subscription.
+        // Overrides any routeId filter (mutually exclusive by definition).
+        where.routeId = null;
+        where.subscriptions = { some: { status: SubscriptionStatus.ACTIVE } };
+      }
       if (q.area) where.area = { contains: q.area, mode: 'insensitive' };
       if (q.q) {
         where.OR = [
@@ -245,10 +258,48 @@ export async function registerCustomerRoutes(app: App) {
         where,
         orderBy: { createdAt: 'desc' },
         take: q.limit + 1,
+        include: { route: { select: { name: true } } },
         ...(q.cursor ? { cursor: { id: q.cursor }, skip: 1 } : {}),
       });
       const nextCursor = rows.length > q.limit ? rows[q.limit]?.id : null;
-      return { customers: rows.slice(0, q.limit), nextCursor };
+      const pageRows = rows.slice(0, q.limit);
+
+      // Derive "outstanding" from the ledger instead of the broken
+      // Customer.balance field, which only ever incremented so the "owes
+      // money" indicator could never fire (audit DAT-02). outstanding =
+      // Σ(delivered litres × rate) − Σ(PAID payments). Two scoped aggregate
+      // queries for the whole page (no N+1).
+      const ids = pageRows.map((c) => c.id);
+      const outstanding = new Map<string, number>();
+      if (ids.length > 0) {
+        const [billedRows, paidRows] = await Promise.all([
+          prisma.$queryRaw<{ customerId: string; billed: number }[]>`
+            SELECT "customerId", COALESCE(SUM("deliveredLitres" * "ratePerLitre"), 0)::float8 AS billed
+            FROM "Delivery"
+            WHERE "customerId" IN (${Prisma.join(ids)})
+              AND "status" IN ('DELIVERED', 'PARTIAL')
+            GROUP BY "customerId"`,
+          prisma.payment.groupBy({
+            by: ['customerId'],
+            where: { customerId: { in: ids }, status: PaymentStatus.PAID },
+            _sum: { amount: true },
+          }),
+        ]);
+        const billedMap = new Map(billedRows.map((r) => [r.customerId, Number(r.billed)]));
+        const paidMap = new Map(paidRows.map((r) => [r.customerId, Number(r._sum.amount ?? 0)]));
+        for (const id of ids) {
+          outstanding.set(id, Math.round((billedMap.get(id) ?? 0) - (paidMap.get(id) ?? 0)));
+        }
+      }
+
+      return {
+        customers: pageRows.map((c) => ({
+          ...c,
+          routeName: c.route?.name ?? null,
+          outstanding: outstanding.get(c.id) ?? 0,
+        })),
+        nextCursor,
+      };
     },
   });
 
@@ -536,11 +587,19 @@ export async function registerCustomerRoutes(app: App) {
           // otherwise not appear on the milkman's route until the next cron.
           // Insert today's delivery directly when the customer has a route, so
           // "add customer → shows on today's route" keeps working.
-          if (body.routeId) {
+          if (body.routeId && product) {
             await tx.delivery.upsert({
-              where: { customerId_scheduledFor: { customerId: c.id, scheduledFor: startDate } },
+              where: {
+                customerId_productId_scheduledFor: {
+                  customerId: c.id,
+                  productId: product.id,
+                  scheduledFor: startDate,
+                },
+              },
               create: {
                 customerId: c.id,
+                subscriptionId: sub.id,
+                productId: product.id,
                 routeId: body.routeId,
                 scheduledLitres: body.litresPerDay,
                 ratePerLitre: rate,
@@ -568,10 +627,22 @@ export async function registerCustomerRoutes(app: App) {
       const { id } = req.params as { id: string };
       const body = PatchBody.parse(req.body);
       if (body.phone) body.phone = normalizePhone(body.phone);
-      const updated = await prisma.customer
-        .update({ where: { id }, data: body })
-        .catch(() => null);
-      if (!updated) return reply.status(404).send({ error: 'NotFound' });
+      const exists = await prisma.customer.findUnique({ where: { id }, select: { id: true } });
+      if (!exists) return reply.status(404).send({ error: 'NotFound' });
+      const updated = await prisma.$transaction(async (tx) => {
+        const c = await tx.customer.update({ where: { id }, data: body });
+        // ADM-08: keep the ACTIVE subscription's litresPerDay in sync with the
+        // customer's edited daily quantity. The scheduler/materializer read the
+        // SUBSCRIPTION's litres, so editing only the customer field changed the
+        // display but not what actually got delivered/billed going forward.
+        if (body.litresPerDay !== undefined) {
+          await tx.subscription.updateMany({
+            where: { customerId: id, status: SubscriptionStatus.ACTIVE },
+            data: { litresPerDay: body.litresPerDay },
+          });
+        }
+        return c;
+      });
       return updated;
     },
   });

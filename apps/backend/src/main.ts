@@ -13,6 +13,7 @@ import { loadConfig } from './config';
 import { buildServer } from './server';
 import { initObservability, captureException } from './observability';
 import { assertBootProviders } from './boot-guard';
+import { closeRedis } from './redis';
 import { prisma } from './prisma';
 
 async function main() {
@@ -51,6 +52,7 @@ async function main() {
     try {
       await app.close();
       await prisma.$disconnect();
+      await closeRedis();
       process.exit(0);
     } catch (err) {
       app.log.error({ err }, 'error during shutdown');

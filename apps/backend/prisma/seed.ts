@@ -243,16 +243,26 @@ async function main() {
     if (e.routeId) execByRoute.set(e.routeId, e.id);
   }
   const cowMilkRate = 64;
+  // Product for the seeded COW_MILK deliveries/subscriptions. Deliveries are
+  // now keyed per-product (audit DAT-03), so set productId on every row.
+  const cowProduct = await prisma.product.findUnique({ where: { code: 'COW_MILK' } });
 
   let deliveryCount = 0;
   for (const c of CUSTOMERS) {
-    if (c.status !== CustomerStatus.ACTIVE || !c.routeId) continue;
+    if (c.status !== CustomerStatus.ACTIVE || !c.routeId || !cowProduct) continue;
     const customer = await prisma.customer.findUnique({ where: { code: c.code } });
     if (!customer) continue;
     await prisma.delivery.upsert({
-      where: { customerId_scheduledFor: { customerId: customer.id, scheduledFor: today } },
+      where: {
+        customerId_productId_scheduledFor: {
+          customerId: customer.id,
+          productId: cowProduct.id,
+          scheduledFor: today,
+        },
+      },
       create: {
         customerId: customer.id,
+        productId: cowProduct.id,
         routeId: c.routeId,
         executiveId: execByRoute.get(c.routeId) ?? null,
         scheduledLitres: c.litresPerDay,
@@ -293,7 +303,6 @@ async function main() {
   // subscription (idempotent: skip if one already exists) so the route
   // materializes every day — this is what makes admin edits flow through
   // to the milkman's app naturally rather than only for hand-seeded rows.
-  const cowProduct = await prisma.product.findUnique({ where: { code: 'COW_MILK' } });
   const subEnd = addDays(today, 30);
   const routedActive = await prisma.customer.findMany({
     where: { status: CustomerStatus.ACTIVE, routeId: { not: null } },
@@ -326,11 +335,18 @@ async function main() {
   // also create these on the first /deliveries/today call).
   for (const d of demoCustomers) {
     const customer = await prisma.customer.findUnique({ where: { code: d.code } });
-    if (!customer) continue;
+    if (!customer || !cowProduct) continue;
     await prisma.delivery.upsert({
-      where: { customerId_scheduledFor: { customerId: customer.id, scheduledFor: today } },
+      where: {
+        customerId_productId_scheduledFor: {
+          customerId: customer.id,
+          productId: cowProduct.id,
+          scheduledFor: today,
+        },
+      },
       create: {
         customerId: customer.id,
+        productId: cowProduct.id,
         routeId: d.routeId,
         executiveId: execByRoute.get(d.routeId) ?? null,
         scheduledLitres: d.litresPerDay,

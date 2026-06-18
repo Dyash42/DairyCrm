@@ -9,7 +9,13 @@ import { getPrompt } from '../prompts';
 
 export const menuFlow: FlowHandler = {
   async matches(ctx) {
-    // Only handle "Hi"-style entry messages when no flow is active.
+    // Re-prompt fallback: if the menu is open and a reply reached here, it
+    // means no menu option matched (e.g. the customer TYPED 'renew' instead of
+    // tapping the list row, or tapped an unknown row). menuFlow is last in the
+    // chain, so re-rendering here prevents the silent dead-end where an active
+    // 'menu' flow had no matching handler (audit CUS-01).
+    if (ctx.state.flow === 'menu') return true;
+    // Otherwise only handle "Hi"-style entry messages when no flow is active.
     if (ctx.state.flow !== null) return false;
     if (ctx.message.kind !== 'text') return false;
     const greet = ctx.message.text.trim().toLowerCase();
@@ -31,8 +37,9 @@ export const menuFlow: FlowHandler = {
       return;
     }
 
-    // Returning customer — show menu. Body, list button text, section title
-    // and row labels are all DB-backed prompts (admin-editable).
+    // Returning customer (fresh greet) OR a re-prompt while the menu is open.
+    // Either way (re)render the menu. Body, list button text, section title and
+    // row labels are all DB-backed prompts (admin-editable).
     ctx.patchState({
       flow: 'menu',
       step: 'await_choice',

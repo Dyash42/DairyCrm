@@ -66,9 +66,29 @@ export async function registerSettingsRoutes(app: App) {
           message: `Setting '${key}' is managed by env / not editable from the admin UI.`,
         });
       }
+      // WEB-02/13: validate the value against the definition's type before
+      // persisting. The admin UI sends `Number(rawInput)`, so an empty/garbage
+      // field would otherwise store NaN (or a negative duration / pause cap)
+      // straight into business math. Reject it here too — server-side is the
+      // real boundary; the client check is just nicer UX.
+      let finalValue: unknown = value;
+      if (def.type === 'NUMBER') {
+        const n = typeof value === 'number' ? value : Number(value);
+        if (!Number.isFinite(n) || n < 0) {
+          return reply.status(422).send({
+            error: 'InvalidValue',
+            message: `'${key}' must be a number ≥ 0.`,
+          });
+        }
+        finalValue = n;
+      } else if (def.type === 'BOOLEAN') {
+        finalValue = value === true || value === 'true';
+      } else if (def.type === 'STRING' && typeof value !== 'string') {
+        finalValue = String(value);
+      }
       const me = req.user;
-      await settings.set(key, value, me.sub);
-      return reply.status(200).send({ ok: true, key, value });
+      await settings.set(key, finalValue, me.sub);
+      return reply.status(200).send({ ok: true, key, value: finalValue });
     },
   });
 

@@ -18,6 +18,7 @@ import { z } from 'zod';
 
 import { prisma } from '../../prisma';
 import { loadConfig } from '../../config';
+import { getRedisOptional, isRedisEnabled } from '../../redis';
 import { OTP_EXPIRY_MS, OTP_LENGTH, RATE_LIMITS } from '../../constants';
 import { getSmsProvider } from '../../providers/sms';
 import { normalizePhone } from '../../utils/phone';
@@ -25,6 +26,11 @@ import type { App } from '../../types';
 
 /** Max wrong OTP attempts per phone before the code is invalidated. */
 const MAX_OTP_ATTEMPTS = 5;
+
+/** Max wrong PIN attempts before the account is locked (re-OTP to recover). */
+const MAX_PIN_ATTEMPTS = 5;
+/** How long a PIN stays locked after too many wrong attempts. */
+const PIN_LOCK_MS = 15 * 60 * 1000;
 
 // ----------------------- Token payload + decorators -----------------------
 
@@ -101,17 +107,64 @@ export async function registerAuthDecorators(app: App) {
   });
 }
 
-// ----------------------- In-process OTP store (dev fallback) -----------------------
+// ----------------------- OTP store (Redis when available) -----------------------
+
+interface OtpRecord {
+  code: string;
+  expiresAt: number;
+  attempts: number;
+}
+
+interface OtpStore {
+  set(phone: string, rec: OtpRecord): Promise<void>;
+  get(phone: string): Promise<OtpRecord | null>;
+  delete(phone: string): Promise<void>;
+}
+
+/** Dev / single-instance fallback — resets on restart. */
+class InMemoryOtpStore implements OtpStore {
+  private readonly m = new Map<string, OtpRecord>();
+  async set(phone: string, rec: OtpRecord): Promise<void> {
+    this.m.set(phone, rec);
+  }
+  async get(phone: string): Promise<OtpRecord | null> {
+    return this.m.get(phone) ?? null;
+  }
+  async delete(phone: string): Promise<void> {
+    this.m.delete(phone);
+  }
+}
 
 /**
- * Phone → { code, expiresAt, attempts }.
- * In production: store in Redis with the same shape so cross-process
- * verification works. Swap the implementation; the contract stays the same.
+ * Redis-backed OTP store (audit INT-01/EDG-09/SEC-05). Cross-instance so an
+ * OTP requested on pod A verifies on pod B, the attempts counter aggregates
+ * across pods (brute-force protection holds), and a restart no longer wipes
+ * live codes. Redis TTL also auto-expires stale codes.
  */
-const otpStore = new Map<
-  string,
-  { code: string; expiresAt: number; attempts: number }
->();
+class RedisOtpStore implements OtpStore {
+  private key(phone: string): string {
+    return `otp:${phone}`;
+  }
+  async set(phone: string, rec: OtpRecord): Promise<void> {
+    const redis = getRedisOptional();
+    if (!redis) return;
+    const ttlSec = Math.max(1, Math.ceil((rec.expiresAt - Date.now()) / 1000));
+    await redis.set(this.key(phone), JSON.stringify(rec), 'EX', ttlSec);
+  }
+  async get(phone: string): Promise<OtpRecord | null> {
+    const redis = getRedisOptional();
+    if (!redis) return null;
+    const raw = await redis.get(this.key(phone));
+    return raw ? (JSON.parse(raw) as OtpRecord) : null;
+  }
+  async delete(phone: string): Promise<void> {
+    const redis = getRedisOptional();
+    if (!redis) return;
+    await redis.del(this.key(phone));
+  }
+}
+
+const otpStore: OtpStore = isRedisEnabled() ? new RedisOtpStore() : new InMemoryOtpStore();
 
 function genOtp(): string {
   // crypto.randomInt is uniform + cryptographically secure. Math.random is
@@ -158,6 +211,11 @@ const AdminLoginBody = z.object({
   password: z.string().min(1).max(200),
 });
 
+const AdminPasswordBody = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: z.string().min(8).max(200),
+});
+
 const OtpRequestBody = z.object({
   phone: z.string().min(10).max(20),
 });
@@ -165,6 +223,14 @@ const OtpRequestBody = z.object({
 const OtpVerifyBody = z.object({
   phone: z.string().min(10).max(20),
   code: z.string().regex(/^\d{4,8}$/),
+});
+
+/** A 4- or 6-digit numeric PIN. */
+const PIN_REGEX = /^(\d{4}|\d{6})$/;
+const PinSetBody = z.object({ pin: z.string().regex(PIN_REGEX) });
+const PinVerifyBody = z.object({
+  phone: z.string().min(10).max(20),
+  pin: z.string().regex(PIN_REGEX),
 });
 
 export async function registerAuthRoutes(app: App) {
@@ -200,6 +266,36 @@ export async function registerAuthRoutes(app: App) {
     },
   });
 
+  // POST /auth/admin/password — authenticated self-service password change.
+  // Requires the CURRENT password (re-auth), so a stolen-but-idle session
+  // can't silently change it. No email reset flow yet (needs an email
+  // provider — tracked); this covers the admin rotating their own password.
+  app.route({
+    method: 'POST',
+    url: '/admin/password',
+    preHandler: app.requireRole('ADMIN'),
+    config: { rateLimit: { max: RATE_LIMITS.auth.max, timeWindow: RATE_LIMITS.auth.timeWindowMs } },
+    handler: async (req, reply) => {
+      const { currentPassword, newPassword } = AdminPasswordBody.parse(req.body);
+      const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
+      if (!user || !user.passwordHash) {
+        return reply.status(401).send({ error: 'Invalid credentials' });
+      }
+      const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!ok) {
+        return reply.status(401).send({ error: 'Current password is incorrect' });
+      }
+      if (newPassword === currentPassword) {
+        return reply
+          .status(422)
+          .send({ error: 'New password must be different from the current one' });
+      }
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+      return { ok: true };
+    },
+  });
+
   // POST /auth/executive/otp/request
   app.route({
     method: 'POST',
@@ -216,7 +312,7 @@ export async function registerAuthRoutes(app: App) {
       }
 
       const code = genOtp();
-      otpStore.set(normalized, {
+      await otpStore.set(normalized, {
         code,
         expiresAt: Date.now() + OTP_EXPIRY_MS,
         attempts: 0,
@@ -249,28 +345,28 @@ export async function registerAuthRoutes(app: App) {
           role: 'EXECUTIVE',
           name: u.name,
         } as JwtPayload);
-        return { token, user: { id: u.id, name: u.name, role: u.role } };
+        return { token, user: { id: u.id, name: u.name, role: u.role }, pinSet: Boolean(u.pinHash) };
       }
 
-      const record = otpStore.get(normalized);
+      const record = await otpStore.get(normalized);
       if (!record || record.expiresAt < Date.now()) {
-        otpStore.delete(normalized);
+        await otpStore.delete(normalized);
         return reply.status(401).send({ error: 'Invalid or expired OTP' });
       }
       // Increment attempts BEFORE comparing — protects against the
       // attacker giving up halfway through a brute-force burst.
       record.attempts += 1;
       if (record.attempts > MAX_OTP_ATTEMPTS) {
-        otpStore.delete(normalized);
+        await otpStore.delete(normalized);
         return reply.status(429).send({
           error: 'Too many attempts. Please request a fresh OTP.',
         });
       }
       if (!safeEqual(record.code, code)) {
-        otpStore.set(normalized, record); // persist the bumped attempts
+        await otpStore.set(normalized, record); // persist the bumped attempts
         return reply.status(401).send({ error: 'Invalid or expired OTP' });
       }
-      otpStore.delete(normalized);
+      await otpStore.delete(normalized);
 
       const user = await prisma.user.findUnique({ where: { phone: normalized } });
       if (!user) {
@@ -282,7 +378,80 @@ export async function registerAuthRoutes(app: App) {
         role: 'EXECUTIVE',
         name: user.name,
       } as JwtPayload);
-      return { token, user: { id: user.id, name: user.name, role: user.role } };
+      return { token, user: { id: user.id, name: user.name, role: user.role }, pinSet: Boolean(user.pinHash) };
+    },
+  });
+
+  // POST /auth/executive/pin/set — set/replace the device-unlock PIN. Requires
+  // a valid EXECUTIVE JWT (i.e. the user just authenticated via OTP). After
+  // this the mobile app unlocks with the PIN instead of requesting an OTP each
+  // launch (audit-driven preferred auth model).
+  app.route({
+    method: 'POST',
+    url: '/executive/pin/set',
+    preHandler: app.requireRole('EXECUTIVE'),
+    handler: async (req, reply) => {
+      const { pin } = PinSetBody.parse(req.body);
+      const pinHash = await bcrypt.hash(pin, 10);
+      await prisma.user.update({
+        where: { id: req.user.sub },
+        data: { pinHash, pinSetAt: new Date(), pinFailedAttempts: 0, pinLockedUntil: null },
+      });
+      return { ok: true };
+    },
+  });
+
+  // POST /auth/executive/pin/verify — unlock with phone + PIN, returns a JWT.
+  // Lockout after MAX_PIN_ATTEMPTS wrong tries (recover via OTP). Same per-IP
+  // rate limit as OTP verify.
+  app.route({
+    method: 'POST',
+    url: '/executive/pin/verify',
+    config: { rateLimit: { max: RATE_LIMITS.authVerify.max, timeWindow: RATE_LIMITS.authVerify.timeWindowMs } },
+    handler: async (req, reply) => {
+      const { phone, pin } = PinVerifyBody.parse(req.body);
+      const normalized = normalizePhone(phone);
+      const user = await prisma.user.findUnique({ where: { phone: normalized } });
+      // Uniform 401 whether the user is missing, ineligible, or has no PIN —
+      // don't leak which phones are registered / PIN-enabled.
+      if (!user || user.role !== 'EXECUTIVE' || !user.active || !user.pinHash) {
+        return reply.status(401).send({ error: 'Invalid PIN' });
+      }
+      if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
+        return reply.status(429).send({
+          error: 'PIN locked after too many attempts. Log in with OTP to reset.',
+        });
+      }
+      const ok = await bcrypt.compare(pin, user.pinHash);
+      if (!ok) {
+        const attempts = user.pinFailedAttempts + 1;
+        const lock = attempts >= MAX_PIN_ATTEMPTS;
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            pinFailedAttempts: lock ? 0 : attempts,
+            pinLockedUntil: lock ? new Date(Date.now() + PIN_LOCK_MS) : null,
+          },
+        });
+        return reply.status(lock ? 429 : 401).send({
+          error: lock
+            ? 'Too many wrong PINs. Locked — log in with OTP to reset.'
+            : 'Invalid PIN',
+        });
+      }
+      // Success — clear the failure counters and issue a fresh token.
+      if (user.pinFailedAttempts !== 0 || user.pinLockedUntil) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { pinFailedAttempts: 0, pinLockedUntil: null },
+        });
+      }
+      const token = await reply.jwtSign({
+        sub: user.id,
+        role: 'EXECUTIVE',
+        name: user.name,
+      } as JwtPayload);
+      return { token, user: { id: user.id, name: user.name, role: user.role }, pinSet: true };
     },
   });
 
@@ -296,6 +465,3 @@ export async function registerAuthRoutes(app: App) {
     },
   });
 }
-
-// Exposed for tests
-export const _otpStore = otpStore;

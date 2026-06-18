@@ -24,6 +24,9 @@ export interface ScheduleSubscription {
   id: string;
   customerId: string;
   routeId: string | null;
+  /** Product this subscription delivers — carried onto the Delivery so a
+   *  multi-product customer gets one delivery per product (audit DAT-03). */
+  productId: string | null;
   litresPerDay: number;
   /** Rate at subscription creation — snapshotted on each Delivery so
    *  historical billing doesn't change retroactively when admin edits
@@ -50,6 +53,8 @@ export interface ScheduleRepo {
 
 export interface ScheduledDelivery {
   customerId: string;
+  subscriptionId: string;
+  productId: string | null;
   routeId: string | null;
   litres: number;
   /** Snapshotted from the subscription so billing is stable. */
@@ -96,15 +101,23 @@ export async function getDeliveriesForDate(
     if (s.status !== 'ACTIVE') continue;
     if (pausedSubs.has(s.id)) continue;
     if (!s.daysOfWeek.includes(weekday)) continue;
-    // Subscription window
+    // Subscription window. endDate is the EXCLUSIVE renewal boundary
+    // (= startDate + durationDays, i.e. the day AFTER the last delivery), so a
+    // 30-day subscription delivers on exactly 30 calendar days — the half-open
+    // window [startDate, endDate). This matches countDeliveriesInRange and the
+    // payment quote (1L × 30 days = 30 deliveries), so billed === delivered
+    // (audit DAT-05). Previously this used `day > endDate`, delivering on
+    // endDate too (N+1) while onboarding/renew billed only N.
     if (day < startOfDayUTC(s.startDate)) continue;
-    if (s.endDate && day > startOfDayUTC(s.endDate)) continue;
+    if (s.endDate && day >= startOfDayUTC(s.endDate)) continue;
     // Holidays — check both ALL-scope and route-specific
     const isHolidayToday = await repo.isHoliday(day, s.routeId);
     if (isHolidayToday) continue;
 
     out.push({
       customerId: s.customerId,
+      subscriptionId: s.id,
+      productId: s.productId,
       routeId: s.routeId,
       litres: s.litresPerDay,
       ratePerLitre: s.ratePerLitre,

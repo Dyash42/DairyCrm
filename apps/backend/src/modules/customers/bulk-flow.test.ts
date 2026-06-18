@@ -20,43 +20,59 @@ const dbCustomers: Array<{ phone: string; code: string }> = [];
 const dbRoutes: Array<{ id: string; name: string }> = [];
 const dbProducts: Array<{ id: string; code: string; ratePerUnit: number }> = [];
 
+let createdCustomerCount = 0;
+
 vi.mock('../../prisma', () => {
-  return {
-    prisma: {
-      customer: {
-        async findMany({ where, select }: any) {
-          const out: any[] = [];
-          for (const c of dbCustomers) {
-            if (where.phone?.in && where.phone.in.includes(c.phone)) {
-              out.push(select?.phone ? { phone: c.phone } : c);
-            } else if (where.code?.in && where.code.in.includes(c.code)) {
-              out.push(select?.code ? { code: c.code } : c);
-            }
+  // prismaMock IS the tx in $transaction (Prisma's transactional client has
+  // the same shape), so the /commit create path resolves against it.
+  const prismaMock: any = {
+    customer: {
+      async findMany({ where, select }: any) {
+        const out: any[] = [];
+        for (const c of dbCustomers) {
+          if (where.phone?.in && where.phone.in.includes(c.phone)) {
+            out.push(select?.phone ? { phone: c.phone } : c);
+          } else if (where.code?.in && where.code.in.includes(c.code)) {
+            out.push(select?.code ? { code: c.code } : c);
           }
-          return out;
-        },
+        }
+        return out;
       },
-      route: {
-        async findMany({ where, select }: any) {
-          return dbRoutes
-            .filter((r) => where.name.in.includes(r.name))
-            .map((r) => (select ? { id: r.id, name: r.name } : r));
-        },
-      },
-      product: {
-        async findMany({ where, select }: any) {
-          return dbProducts
-            .filter((p) => where.code.in.includes(p.code))
-            .map((p) =>
-              select
-                ? { id: p.id, code: p.code, ratePerUnit: p.ratePerUnit }
-                : p,
-            );
-        },
+      async create({ data }: any) {
+        createdCustomerCount += 1;
+        return { id: `cust-${createdCustomerCount}`, ...data };
       },
     },
+    route: {
+      async findMany({ where, select }: any) {
+        return dbRoutes
+          .filter((r) => where.name.in.includes(r.name))
+          .map((r) => (select ? { id: r.id, name: r.name } : r));
+      },
+    },
+    product: {
+      async findMany({ where, select }: any) {
+        return dbProducts
+          .filter((p) => where.code.in.includes(p.code))
+          .map((p) =>
+            select
+              ? { id: p.id, code: p.code, ratePerUnit: p.ratePerUnit }
+              : p,
+          );
+      },
+    },
+    qrCode: { async create() { return {}; } },
+    subscription: { async create({ data }: any) { return { id: 'sub-1', ...data }; } },
+    renewalReminder: { async create() { return {}; } },
+    async $transaction(fn: any) { return fn(prismaMock); },
   };
+  return { prisma: prismaMock };
 });
+
+// Deterministic code allocator so /commit doesn't query a real counter.
+vi.mock('../../services/customer-code', () => ({
+  nextCustomerCode: async () => 'JHR-100999',
+}));
 
 // Stub out settings to avoid touching SettingsService
 vi.mock('../../services/settings', () => ({
@@ -86,6 +102,7 @@ beforeEach(() => {
   dbCustomers.length = 0;
   dbRoutes.length = 0;
   dbProducts.length = 0;
+  createdCustomerCount = 0;
 });
 
 const VALID_CSV_HEADER =
@@ -211,5 +228,74 @@ describe('POST /customers/bulk/validate', () => {
     expect(body.valid[0].phone).toBe('+919876543210');
     expect(body.valid[0].routeName).toBe('Route 4');
     expect(body.valid[0].productCode).toBe('COW_MILK');
+  });
+});
+
+describe('POST /customers/bulk/commit (SEC-03/ADM-04 server-side re-validation)', () => {
+  const validRow = {
+    row: 2,
+    name: 'Anita',
+    phone: '+919876543210',
+    addressLine1: 'Plot 4',
+    area: 'Berhampur',
+    pinCode: '760004',
+    routeName: 'Route 4',
+    productCode: 'COW_MILK',
+    litresPerDay: 1.5,
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    durationDays: 30,
+    startDate: '2026-06-01',
+  };
+
+  it('rejects malformed / out-of-range rows instead of trusting the client', async () => {
+    // A crafted POST that bypasses the browser preview: bad phone, litres > 50,
+    // negative duration. NONE may be written; all land in `failures`.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/customers/bulk/commit',
+      headers: { 'content-type': 'application/json' },
+      payload: {
+        rows: [
+          { ...validRow, row: 2, phone: 'not-a-phone' },
+          { ...validRow, row: 3, litresPerDay: 999 },
+          { ...validRow, row: 4, durationDays: -5 },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.imported).toBe(0);
+    expect(body.failures).toHaveLength(3);
+  });
+
+  it('imports a valid row (schema is not over-strict)', async () => {
+    dbRoutes.push({ id: 'r1', name: 'Route 4' });
+    dbProducts.push({ id: 'p1', code: 'COW_MILK', ratePerUnit: 60 });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/customers/bulk/commit',
+      headers: { 'content-type': 'application/json' },
+      payload: { rows: [validRow] },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.imported).toBe(1);
+    expect(body.failures).toHaveLength(0);
+  });
+
+  it('rejects a row whose phone already exists in the DB', async () => {
+    dbCustomers.push({ phone: '+919876543210', code: 'JHR-100001' });
+    dbRoutes.push({ id: 'r1', name: 'Route 4' });
+    dbProducts.push({ id: 'p1', code: 'COW_MILK', ratePerUnit: 60 });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/customers/bulk/commit',
+      headers: { 'content-type': 'application/json' },
+      payload: { rows: [validRow] },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.imported).toBe(0);
+    expect(body.failures.some((f: any) => /already exists/.test(f.error))).toBe(true);
   });
 });

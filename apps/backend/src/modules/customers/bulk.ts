@@ -34,6 +34,36 @@ const CommitBody = z.object({
   rows: z.array(z.unknown()).min(1).max(2000),
 });
 
+/**
+ * SEC-03/ADM-04: strict server-side schema for a committed row. /commit is a
+ * trust boundary — the /validate preview runs in the browser, so a crafted POST
+ * could otherwise smuggle out-of-range litres, negative/huge durations,
+ * malformed phones/codes, or unbounded strings straight into the DB. Every row
+ * is re-validated against this before any write; bad rows go to `failures`.
+ * Mirrors the field rules in services/bulk-customer-import.ts validateCsv.
+ */
+const CommitRow = z.object({
+  row: z.coerce.number().int().nonnegative().catch(0),
+  name: z.string().trim().min(1).max(120),
+  phone: z.string().regex(/^\+\d{10,15}$/, 'phone must be normalized E.164 (+<digits>)'),
+  altPhone: z.string().regex(/^\+\d{10,15}$/).nullish(),
+  email: z.string().email().max(200).nullish(),
+  addressLine1: z.string().trim().min(1).max(300),
+  area: z.string().trim().max(120).nullish(),
+  pinCode: z.string().trim().max(12).nullish(),
+  routeName: z.string().trim().min(1).max(120),
+  productCode: z.string().trim().min(1).max(60),
+  litresPerDay: z.coerce.number().positive().max(50),
+  daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  durationDays: z.coerce.number().int().min(1).max(365),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD'),
+  customerCode: z
+    .string()
+    .regex(/^[A-Z]+-\d+$/i, 'customer_code must look like JHR-100123')
+    .transform((s) => s.toUpperCase())
+    .nullish(),
+});
+
 export async function registerCustomerBulkRoutes(app: App) {
   // Template — also reachable without auth so admin can pre-download
   // before logging in if needed. We keep auth on for now since this is
@@ -154,9 +184,28 @@ export async function registerCustomerBulkRoutes(app: App) {
   app.post('/commit', {
     handler: async (req, reply) => {
       const body = CommitBody.parse(req.body);
-      const rows = body.rows as ValidatedRow[];
 
-      // Re-fetch route + product maps so we don't trust stale client data
+      // SEC-03/ADM-04: re-validate EVERY row server-side before any write — the
+      // browser /validate preview is not a trust boundary. Bad rows → failures.
+      const failures: Array<{ row: number; error: string }> = [];
+      const rows: z.infer<typeof CommitRow>[] = [];
+      body.rows.forEach((raw, i) => {
+        const parsed = CommitRow.safeParse(raw);
+        if (parsed.success) {
+          rows.push(parsed.data);
+        } else {
+          const rowNo =
+            raw && typeof raw === 'object' && typeof (raw as { row?: unknown }).row === 'number'
+              ? (raw as { row: number }).row
+              : i + 1;
+          failures.push({
+            row: rowNo,
+            error: parsed.error.issues.map((x) => x.message).join('; ').slice(0, 200),
+          });
+        }
+      });
+
+      // Re-fetch route + product maps so we never trust client-supplied ids.
       const routeNames = Array.from(new Set(rows.map((r) => r.routeName)));
       const productCodes = Array.from(new Set(rows.map((r) => r.productCode)));
       const routes = await prisma.route.findMany({
@@ -168,13 +217,35 @@ export async function registerCustomerBulkRoutes(app: App) {
       });
       const productByCode = new Map(products.map((p) => [p.code, p]));
 
+      // Re-check phone + code uniqueness against the DB and within the batch —
+      // the same checks /validate runs, with the DB unique constraint as the
+      // final backstop for cross-request races.
+      const existingPhones = new Set(
+        (await prisma.customer.findMany({
+          where: { phone: { in: rows.map((r) => r.phone) } },
+          select: { phone: true },
+        })).map((c) => c.phone),
+      );
+      const claimedCodes = rows
+        .map((r) => r.customerCode)
+        .filter((c): c is string => !!c);
+      const existingCodes = new Set(
+        claimedCodes.length
+          ? (await prisma.customer.findMany({
+              where: { code: { in: claimedCodes } },
+              select: { code: true },
+            })).map((c) => c.code)
+          : [],
+      );
+      const seenPhones = new Set<string>();
+      const seenCodes = new Set<string>();
+
       const renewalLeadDays = await settings.getNumber(
         'subscription.renewal_reminder_days_before',
         3,
       );
 
       const createdIds: string[] = [];
-      const failures: Array<{ row: number; error: string }> = [];
 
       for (const row of rows) {
         try {
@@ -182,6 +253,20 @@ export async function registerCustomerBulkRoutes(app: App) {
           const product = productByCode.get(row.productCode);
           if (!route || !product) {
             failures.push({ row: row.row, error: 'Route or product missing' });
+            continue;
+          }
+          if (existingPhones.has(row.phone) || seenPhones.has(row.phone)) {
+            failures.push({ row: row.row, error: `Phone ${row.phone} already exists` });
+            continue;
+          }
+          if (
+            row.customerCode &&
+            (existingCodes.has(row.customerCode) || seenCodes.has(row.customerCode))
+          ) {
+            failures.push({
+              row: row.row,
+              error: `customer_code ${row.customerCode} already in use`,
+            });
             continue;
           }
           const rate = Number(product.ratePerUnit) || DEFAULT_RATE_PER_LITRE_INR;
@@ -248,6 +333,8 @@ export async function registerCustomerBulkRoutes(app: App) {
             return customer.id;
           });
           createdIds.push(result);
+          seenPhones.add(row.phone);
+          if (row.customerCode) seenCodes.add(row.customerCode);
         } catch (err) {
           failures.push({
             row: row.row,

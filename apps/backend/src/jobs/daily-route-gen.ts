@@ -11,51 +11,9 @@
 import { DeliveryStatus } from '@prisma/client';
 
 import { prisma } from '../prisma';
-import {
-  getDeliveriesForDate,
-  type ScheduleRepo,
-} from '../services/scheduling';
+import { getDeliveriesForDate } from '../services/scheduling';
+import { buildScheduleRepo } from '../services/schedule-repo';
 import { startOfBusinessDayUTC } from '../utils/dates';
-
-function buildScheduleRepo(): ScheduleRepo {
-  return {
-    async listSubscriptionsActiveOn() {
-      const rows = await prisma.subscription.findMany({
-        where: { status: 'ACTIVE' },
-        include: { customer: true },
-      });
-      return rows.map((s) => ({
-        id: s.id,
-        customerId: s.customerId,
-        routeId: s.customer.routeId,
-        litresPerDay: Number(s.litresPerDay),
-        ratePerLitre: Number(s.ratePerLitre),
-        daysOfWeek: s.daysOfWeek,
-        startDate: s.startDate,
-        endDate: s.endDate,
-        status: s.status,
-      }));
-    },
-    async listPausesOverlapping(date) {
-      return prisma.pauseRecord.findMany({
-        where: {
-          startDate: { lte: date },
-          endDate: { gte: date },
-        },
-        select: { subscriptionId: true, startDate: true, endDate: true },
-      });
-    },
-    async isHoliday(date, routeId) {
-      const row = await prisma.holidayCalendar.findFirst({
-        where: {
-          date,
-          OR: [{ scope: 'ALL' }, ...(routeId ? [{ scope: routeId }] : [])],
-        },
-      });
-      return row !== null;
-    },
-  };
-}
 
 export async function runDailyRouteGenOnce(today: Date = startOfTodayUTC()): Promise<{
   date: string;
@@ -80,6 +38,8 @@ export async function runDailyRouteGenOnce(today: Date = startOfTodayUTC()): Pro
       .filter((p) => p.routeId !== null)
       .map((p) => ({
         customerId: p.customerId,
+        subscriptionId: p.subscriptionId,
+        productId: p.productId,
         routeId: p.routeId as string,
         scheduledLitres: p.litres,
         // Snapshot rate from subscription so historical billing is

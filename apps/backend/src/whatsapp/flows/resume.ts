@@ -42,6 +42,19 @@ export const resumeFlow: FlowHandler = {
     if (ctx.message.kind !== 'button') return;
 
     if (ctx.message.payload === 'resume_tomorrow' && ctx.state.customerId) {
+      // Don't send a false "deliveries resume tomorrow" when nothing is paused
+      // (audit CUS-04): resumeSubscription silently no-ops if there's no PAUSED
+      // sub, so the customer would get a misleading confirmation.
+      const pause = await ctx.repos.getActivePause(ctx.state.customerId);
+      if (!pause) {
+        ctx.send({
+          kind: 'text',
+          to: phone,
+          body: 'Your deliveries are already running — there is no active pause to resume. 🥛',
+        });
+        ctx.patchState({ flow: null, step: null, context: {} });
+        return;
+      }
       const sub = await ctx.repos.getActiveSubscription(ctx.state.customerId);
       const litres = sub?.litresPerDay ?? 1;
       await ctx.repos.resumeSubscription(ctx.state.customerId);

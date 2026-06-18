@@ -56,7 +56,18 @@ export const onboardingFlow: FlowHandler = {
       }
 
       case 'ask_email': {
-        const newCtx: OnboardCtx = { ...slot, email: text };
+        // Honor "skip" (the prompt offers it) and validate the format — the
+        // bot used to save 'skip' / garbage as the email (audit CUS-02).
+        const skipped = /^skip$|^no$|^-$/i.test(text);
+        if (!skipped && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
+          ctx.send({
+            kind: 'text',
+            to: phone,
+            body: 'That email doesn’t look right. Please enter a valid email, or type "skip".',
+          });
+          return;
+        }
+        const newCtx: OnboardCtx = { ...slot, email: skipped ? undefined : text };
         ctx.patchState({ step: 'ask_alt_phone', context: newCtx as Record<string, unknown> });
         ctx.send({ kind: 'text', to: phone, body: getPrompt('onboarding.ask_alt_phone').body });
         return;
@@ -79,14 +90,30 @@ export const onboardingFlow: FlowHandler = {
         const newCtx: OnboardCtx = { ...slot, litresPerDay: litres };
         ctx.send({ kind: 'text', to: phone, body: getPrompt('onboarding.creating_account').body });
 
-        const customer = await ctx.repos.createCustomer({
-          phone,
-          name: slot.name ?? 'Customer',
-          addressLine1: slot.address ?? '',
-          email: slot.email,
-          altPhone: slot.altPhone,
-          litresPerDay: litres,
-        });
+        let customer: Awaited<ReturnType<typeof ctx.repos.createCustomer>>;
+        try {
+          customer = await ctx.repos.createCustomer({
+            phone,
+            name: slot.name ?? 'Customer',
+            addressLine1: slot.address ?? '',
+            email: slot.email,
+            altPhone: slot.altPhone,
+            litresPerDay: litres,
+          });
+        } catch (e) {
+          // Duplicate phone (P2002): this number already has an account. Don't
+          // strand the FSM after "creating your account…" (audit CUS-05).
+          if ((e as { code?: string }).code === 'P2002') {
+            ctx.send({
+              kind: 'text',
+              to: phone,
+              body: 'It looks like you already have an account with us. Send "Hi" to see your menu.',
+            });
+            ctx.patchState({ flow: null, step: null, context: {} });
+            return;
+          }
+          throw e;
+        }
 
         ctx.patchState({
           step: 'ask_days',

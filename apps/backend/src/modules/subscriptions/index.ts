@@ -21,6 +21,7 @@ import {
 import { prisma } from '../../prisma';
 import { calculateQuote, DAYS_OF_WEEK } from '../../services/subscription-calc';
 import { settings } from '../../services/settings';
+import { startOfBusinessDayUTC } from '../../utils/dates';
 
 const CreateBody = z.object({
   customerId: z.string(),
@@ -55,7 +56,11 @@ export async function registerSubscriptionRoutes(app: App) {
 
   app.get('/', {
     handler: async (req, reply) => {
-      const { customerId } = req.query as { customerId?: string };
+      const { customerId, limit: limitRaw, cursor } = req.query as {
+        customerId?: string;
+        limit?: string;
+        cursor?: string;
+      };
       const me = req.user;
       // ADMIN can list anyone; EXECUTIVE must supply a customerId AND
       // that customer must be on their assigned route.
@@ -78,11 +83,18 @@ export async function registerSubscriptionRoutes(app: App) {
           return reply.status(403).send({ error: 'Forbidden' });
         }
       }
-      const subs = await prisma.subscription.findMany({
+      // PER-10: bound the list. With no customerId an ADMIN was fetching every
+      // subscription row unbounded; cap + cursor-paginate (one customer's subs
+      // are few, so this only matters for the admin-wide list).
+      const limit = Math.min(500, Math.max(1, Number(limitRaw) || 100));
+      const rows = await prisma.subscription.findMany({
         where: customerId ? { customerId } : {},
         orderBy: { createdAt: 'desc' },
+        take: limit + 1,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       });
-      return { subscriptions: subs };
+      const nextCursor = rows.length > limit ? rows[limit]?.id ?? null : null;
+      return { subscriptions: rows.slice(0, limit), nextCursor };
     },
   });
 
@@ -116,6 +128,15 @@ export async function registerSubscriptionRoutes(app: App) {
         3,
       );
 
+      // DAT-05: bill exactly what we deliver. endDate = startDate +
+      // durationDays is the EXCLUSIVE renewal boundary, and the scheduler
+      // delivers on every matching weekday in the half-open window
+      // [startDate, endDate) (see services/scheduling.ts: it skips
+      // `day >= endDate`). calculateQuote counts that same window from
+      // startDate over `durationDays` days, so quote.deliveryCount === the
+      // deliveries actually materialized — a 30-day sub bills + delivers 30.
+      const endDate = new Date(body.startDate);
+      endDate.setUTCDate(endDate.getUTCDate() + durationDays);
       const quote = calculateQuote({
         litresPerDay: body.litresPerDay,
         ratePerLitre: rate,
@@ -123,8 +144,6 @@ export async function registerSubscriptionRoutes(app: App) {
         startDate: body.startDate,
         durationDays,
       });
-      const endDate = new Date(body.startDate);
-      endDate.setUTCDate(endDate.getUTCDate() + durationDays);
 
       const sub = await prisma.$transaction(async (tx) => {
         const created = await tx.subscription.create({
@@ -234,10 +253,8 @@ export async function registerSubscriptionRoutes(app: App) {
         });
       }
 
-      const today = new Date();
-      const todayUtc = new Date(
-        Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
-      );
+      // Business-day (IST) midnight — not UTC-date-of-now (audit BAC-06).
+      const todayUtc = startOfBusinessDayUTC();
 
       // Compare-and-swap the status inside the transaction. If a concurrent
       // resume races, only one updateMany returns count===1; the other
@@ -304,6 +321,10 @@ export async function registerSubscriptionRoutes(app: App) {
     preHandler: adminOnly,
     handler: async (req) => {
       const body = QuoteBody.parse(req.body);
+      // DAT-05: mirror the create path so this preview equals what the customer
+      // is charged AND delivered. The scheduler delivers the half-open window
+      // [startDate, startDate + durationDays), which is exactly the window
+      // calculateQuote counts over `durationDays` days from startDate.
       return calculateQuote({
         litresPerDay: body.litresPerDay,
         ratePerLitre: body.ratePerLitre,

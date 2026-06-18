@@ -34,6 +34,14 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Executive PIN auth (mobile): OTP is required only for first-time setup /
+  // new device / logout / reset / lockout; thereafter the app unlocks with a
+  // locally-entered PIN verified against pinHash. Cuts SMS cost + friction.
+  pinHash           String?
+  pinSetAt          DateTime?
+  pinFailedAttempts Int       @default(0)
+  pinLockedUntil    DateTime?
+
   // Executive-specific
   executive Executive?
 }
@@ -76,6 +84,11 @@ enum CustomerStatus {
   ACTIVE
   PAUSED
   CANCELLED
+  // ARC-08: a customer created by WhatsApp onboarding but not yet paid. Starts
+  // PENDING, promoted to ACTIVE by activateSubscription on payment. Abandoned
+  // onboardings stay PENDING — a filterable "lead" segment that the scheduler,
+  // active-customer counts, and EDG-04 surfacing all ignore (they key on ACTIVE).
+  PENDING
 }
 
 model Customer {
@@ -165,6 +178,7 @@ model Subscription {
 
   pauses           PauseRecord[]
   renewalReminders RenewalReminder[]
+  deliveries       Delivery[]
 
   @@index([customerId, status])
   @@index([productId])
@@ -276,6 +290,7 @@ model Product {
   updatedBy   String?
 
   subscriptions Subscription[]
+  deliveries    Delivery[]
 
   @@index([active, sortOrder])
   @@index([category])
@@ -395,6 +410,28 @@ model Payment {
   createdAt  DateTime      @default(now())
 
   @@index([customerId, status])
+  // DAT-10: a UNIQUE reference is the durable backstop against double-credit —
+  // the webhook can never reconcile/create two PAID rows for one gateway ref,
+  // and the door-cash payment (`delivery:<id>`) can't be inserted twice. The
+  // column is nullable, so multiple manual payments WITHOUT a reference are
+  // still allowed (Postgres treats NULLs as distinct). Doubles as the reference
+  // lookup index the webhook + EOD cash query need (was @@index — audit PER-08).
+  @@unique([reference])
+}
+
+// PRD §5.1.4: route↔executive re-assignment history. An append-only audit log —
+// one row per change to a route's assigned executive. Ids are stored as plain
+// strings (no FK) so the history survives executive/route deletion, which is
+// the point of an audit trail.
+model RouteAssignment {
+  id                  String   @id @default(cuid())
+  routeId             String
+  executiveId         String? // the executive assigned by this change (null = unassigned)
+  previousExecutiveId String? // who was assigned before (null = was unassigned)
+  changedBy           String? // admin User.id who made the change
+  createdAt           DateTime @default(now())
+
+  @@index([routeId, createdAt])
 }
 
 // ============================================================
@@ -413,6 +450,14 @@ model Delivery {
   id              String         @id @default(cuid())
   customerId      String
   customer        Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  /// Which subscription + product this delivery fulfils. A customer can hold
+  /// multiple active subscriptions (e.g. cow + buffalo milk), so deliveries are
+  /// keyed per product, not per customer (audit DAT-03/DAT-06). Nullable for
+  /// back-compat with rows created before this change.
+  subscriptionId  String?
+  subscription    Subscription?  @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  productId       String?
+  product         Product?       @relation(fields: [productId], references: [id])
   routeId         String
   route           Route          @relation(fields: [routeId], references: [id])
   executiveId     String?
@@ -438,11 +483,15 @@ model Delivery {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
-  @@unique([customerId, scheduledFor])
+  // Per-product uniqueness so a customer with two products gets two delivery
+  // rows on the same day (previously @@unique([customerId, scheduledFor])
+  // silently dropped the 2nd via skipDuplicates — audit DAT-03).
+  @@unique([customerId, productId, scheduledFor])
   @@index([routeId, scheduledFor])
   @@index([executiveId, scheduledFor])
   @@index([scheduledFor, status])
   @@index([status, confirmationSentAt])
+  @@index([subscriptionId])
 }
 
 // ============================================================

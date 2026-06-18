@@ -17,61 +17,9 @@ import { DeliveryStatus, PaymentMode, PaymentStatus } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../../prisma';
-import { getDeliveriesForDate, type ScheduleRepo } from '../../services/scheduling';
+import { getDeliveriesForDate } from '../../services/scheduling';
+import { buildScheduleRepo } from '../../services/schedule-repo';
 import { startOfBusinessDayUTC } from '../../utils/dates';
-
-function buildScheduleRepo(): ScheduleRepo {
-  // Per-pass holiday cache. getDeliveriesForDate calls isHoliday once per
-  // subscription; without memoization that was one holidayCalendar query PER
-  // active subscription — 500–1000 serial round-trips per materialization
-  // pass (audit PER-01). Memoize by date so it collapses to one query.
-  const holidayCache = new Map<string, { all: boolean; routes: Set<string> }>();
-  return {
-    async listSubscriptionsActiveOn() {
-      const rows = await prisma.subscription.findMany({
-        // Exclude subscriptions whose customer is not ACTIVE. A cancelled (or
-        // paused) customer must never be scheduled even if a stale subscription
-        // was left ACTIVE — backstop for audit ADM-02.
-        where: { status: 'ACTIVE', customer: { status: 'ACTIVE' } },
-        include: { customer: true },
-      });
-      return rows.map((s) => ({
-        id: s.id,
-        customerId: s.customerId,
-        routeId: s.customer.routeId,
-        litresPerDay: Number(s.litresPerDay),
-        ratePerLitre: Number(s.ratePerLitre),
-        daysOfWeek: s.daysOfWeek,
-        startDate: s.startDate,
-        endDate: s.endDate,
-        status: s.status,
-      }));
-    },
-    async listPausesOverlapping(date) {
-      return prisma.pauseRecord.findMany({
-        where: {
-          startDate: { lte: date },
-          endDate: { gte: date },
-        },
-        select: { subscriptionId: true, startDate: true, endDate: true },
-      });
-    },
-    async isHoliday(date, routeId) {
-      const key = date.toISOString().slice(0, 10);
-      let entry = holidayCache.get(key);
-      if (!entry) {
-        const rows = await prisma.holidayCalendar.findMany({
-          where: { date },
-          select: { scope: true },
-        });
-        const routes = new Set(rows.map((r) => r.scope));
-        entry = { all: routes.has('ALL'), routes };
-        holidayCache.set(key, entry);
-      }
-      return entry.all || (routeId != null && entry.routes.has(routeId));
-    },
-  };
-}
 
 /**
  * Run the (expensive) full materialization only when today has no Delivery
@@ -89,7 +37,7 @@ async function materializeTodaysDeliveries(today: Date) {
   // No early-return on `existing > 0` — see daily-route-gen.ts for why.
   // A previous partial materialization would otherwise permanently skip
   // the remaining customers. Idempotent because of the unique index on
-  // (customerId, scheduledFor) + skipDuplicates.
+  // (customerId, productId, scheduledFor) + skipDuplicates.
   const planned = await getDeliveriesForDate(today, buildScheduleRepo());
   if (planned.length === 0) return;
 
@@ -99,6 +47,8 @@ async function materializeTodaysDeliveries(today: Date) {
       .filter((p) => p.routeId !== null)
       .map((p) => ({
         customerId: p.customerId,
+        subscriptionId: p.subscriptionId,
+        productId: p.productId,
         routeId: p.routeId as string,
         scheduledLitres: p.litres,
         // Snapshot rate at materialization — historical billing reads
@@ -181,6 +131,7 @@ export async function registerDeliveryRoutes(app: App) {
               lng: true,
             },
           },
+          product: { select: { name: true } },
         },
         orderBy: { customer: { routeSeq: 'asc' } },
       });
@@ -232,6 +183,7 @@ export async function registerDeliveryRoutes(app: App) {
               lng: true,
             },
           },
+          product: { select: { name: true } },
         },
         orderBy: { customer: { routeSeq: 'asc' } },
       });
@@ -436,27 +388,34 @@ export async function registerDeliveryRoutes(app: App) {
       };
       let scheduledLitres = new Prisma.Decimal(0);
       let deliveredLitres = new Prisma.Decimal(0);
-      const customerIds = new Set<string>();
       for (const r of rows) {
         scheduledLitres = scheduledLitres.add(r.scheduledLitres);
         if (r.deliveredLitres) deliveredLitres = deliveredLitres.add(r.deliveredLitres);
-        customerIds.add(r.customerId);
         if (r.status === DeliveryStatus.DELIVERED) counts.delivered += 1;
         else if (r.status === DeliveryStatus.PARTIAL) counts.partial += 1;
         else if (r.status === DeliveryStatus.SKIPPED) counts.skipped += 1;
         else counts.pending += 1;
       }
 
-      // Cash payments tagged with this executive's deliveries today.
-      const cashPayments = await prisma.payment.findMany({
-        where: {
-          mode: PaymentMode.CASH,
-          status: PaymentStatus.PAID,
-          paidAt: { gte: today },
-          customerId: { in: Array.from(customerIds) },
-        },
-        select: { amount: true },
-      });
+      // Cash collected at THIS executive's deliveries today. Scope by the
+      // `delivery:<id>` reference tag (cash recorded at confirm) rather than a
+      // broad customerId match — otherwise cash another exec or an admin
+      // collected from the same customer was misattributed (audit EDG-05/DAT-11).
+      // Bound paidAt to today's window so future-dated cash can't leak in (BAC-02).
+      const deliveryRefs = rows.map((r) => `delivery:${r.id}`);
+      const tomorrow = new Date(today);
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+      const cashPayments = deliveryRefs.length
+        ? await prisma.payment.findMany({
+            where: {
+              mode: PaymentMode.CASH,
+              status: PaymentStatus.PAID,
+              paidAt: { gte: today, lt: tomorrow },
+              reference: { in: deliveryRefs },
+            },
+            select: { amount: true },
+          })
+        : [];
       const cashTotal = cashPayments.reduce(
         (acc, p) => acc.add(p.amount),
         new Prisma.Decimal(0),

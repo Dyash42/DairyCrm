@@ -7,6 +7,8 @@
 import type { FlowContext, FlowHandler } from '../types';
 import { TEMPLATES } from '../templates';
 import { getPrompt } from '../prompts';
+import { settings } from '../../services/settings';
+import { startOfBusinessDayUTC, addDays, isoDate } from '../../utils/dates';
 
 interface PauseCtx {
   startDate?: string; // ISO date YYYY-MM-DD
@@ -49,8 +51,9 @@ export const pauseFlow: FlowHandler = {
           });
           return;
         }
-        // PRD §4 "System validates dates": reject a start date in the past.
-        if (date < isoDate(new Date())) {
+        // PRD §4 "System validates dates": reject a start date in the past
+        // (compared against the IST business day — see CUS-08).
+        if (date < isoDate(startOfBusinessDayUTC())) {
           ctx.send({
             kind: 'text',
             to: phone,
@@ -88,6 +91,18 @@ export const pauseFlow: FlowHandler = {
           return;
         }
         const days = daysBetween(start, date) + 1;
+        // Enforce the same pause cap the admin path does (audit CUS-03): the
+        // bot had no limit, so a customer could pause for years with a far-out
+        // AutoResumeJob.
+        const maxDays = await settings.getNumber('pause.max_days', 60);
+        if (days > maxDays) {
+          ctx.send({
+            kind: 'text',
+            to: phone,
+            body: `Deliveries can be paused for at most ${maxDays} days. Please pick an earlier end date.`,
+          });
+          return;
+        }
         ctx.patchState({
           step: 'confirm',
           context: { ...slot, endDate: date } as Record<string, unknown>,
@@ -138,19 +153,18 @@ export const pauseFlow: FlowHandler = {
 /** Tolerant date parser — handles 'tomorrow', '3 Jun', '03/06', '2026-06-03'. */
 function parseLooseDate(s: string): string | null {
   const lower = s.toLowerCase().trim();
-  if (/^tomorrow$/.test(lower)) {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return isoDate(d);
-  }
-  if (/^today$/.test(lower)) return isoDate(new Date());
+  // "today"/"tomorrow" anchored to the BUSINESS day (IST), not the server's
+  // local/UTC day — a customer messaging at 02:00 IST (= 20:30 UTC the previous
+  // day) would otherwise pause starting "yesterday" (audit CUS-08).
+  if (/^tomorrow$/.test(lower)) return isoDate(addDays(startOfBusinessDayUTC(), 1));
+  if (/^today$/.test(lower)) return isoDate(startOfBusinessDayUTC());
   const iso = lower.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return lower;
   const slash = lower.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$/);
   if (slash && slash[1] && slash[2]) {
     const dd = slash[1].padStart(2, '0');
     const mm = slash[2].padStart(2, '0');
-    const yy = slash[3] ?? String(new Date().getFullYear());
+    const yy = slash[3] ?? String(startOfBusinessDayUTC().getUTCFullYear());
     return `${yy.length === 2 ? `20${yy}` : yy}-${mm}-${dd}`;
   }
   // "3 Jun" or "3 jun 2026"
@@ -159,7 +173,7 @@ function parseLooseDate(s: string): string | null {
     const month = MONTHS[named[2].slice(0, 3) as keyof typeof MONTHS];
     if (month !== undefined) {
       const dd = named[1].padStart(2, '0');
-      const yr = named[3] ?? String(new Date().getFullYear());
+      const yr = named[3] ?? String(startOfBusinessDayUTC().getUTCFullYear());
       return `${yr}-${month}-${dd}`;
     }
   }
@@ -171,21 +185,19 @@ const MONTHS = {
   jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
 } as const;
 
-function isoDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
+// isoDate / addDays / startOfBusinessDayUTC are imported from utils/dates so
+// all date math here is UTC/business-TZ aligned (audit CUS-08). The previous
+// local-time helpers used getFullYear/getMonth/getDate, which silently shifted
+// dates by a day on a UTC-clock server.
 
 function daysBetween(a: string, b: string): number {
-  const da = new Date(a);
-  const db = new Date(b);
+  // a, b are 'YYYY-MM-DD'. Parse as explicit UTC midnight so the diff is a
+  // whole number of days regardless of the server's clock.
+  const da = new Date(`${a}T00:00:00.000Z`);
+  const db = new Date(`${b}T00:00:00.000Z`);
   return Math.round((db.getTime() - da.getTime()) / 86_400_000);
 }
 
 function addOneDay(iso: string): string {
-  const d = new Date(iso);
-  d.setDate(d.getDate() + 1);
-  return isoDate(d);
+  return isoDate(addDays(new Date(`${iso}T00:00:00.000Z`), 1));
 }

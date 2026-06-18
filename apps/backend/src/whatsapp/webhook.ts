@@ -9,10 +9,23 @@
  * with two route handlers calling `verifyWebhook` and `handleWebhook`.
  */
 
+import crypto from 'node:crypto';
+
+import { prisma } from '../prisma';
 import { engine } from './engine';
 import type { InboundMessage } from './types';
 
 // ---------- GET — verification ----------
+
+/** Constant-time string comparison — no early return on first mismatch. */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
+}
 
 export interface VerifyParams {
   mode: string | undefined;
@@ -27,7 +40,8 @@ export function verifyWebhook(
   if (
     params.mode === 'subscribe' &&
     expected &&
-    params.token === expected &&
+    params.token !== undefined &&
+    safeEqual(params.token, expected) &&
     params.challenge
   ) {
     return { status: 200, body: params.challenge };
@@ -76,10 +90,18 @@ interface MetaIncomingMessage {
 }
 
 interface MetaDeliveryStatus {
-  id: string;
+  id: string; // the message id WE sent (matches WhatsAppLog.metaMsgId)
   status: 'sent' | 'delivered' | 'read' | 'failed';
   timestamp: string;
   recipient_id: string;
+  // Billing block — only present on a billable status (usually the first
+  // `sent`/`delivered`). Meta does NOT include a numeric cost here, only the
+  // billability flag + category, so we cannot derive costInr from this payload.
+  pricing?: {
+    billable?: boolean;
+    pricing_model?: string;
+    category?: string;
+  };
 }
 
 /**
@@ -105,10 +127,22 @@ export async function handleWebhook(
           console.error('[wa] engine error', err);
         }
       }
-      // Delivery / read receipts
+      // Delivery / read receipts (audit EDG-06 / ARC-10).
+      // Persist the latest Meta status onto the WhatsAppLog row we created when
+      // sending. We match on metaMsgId (the message id Meta echoes back as
+      // status.id). Note: the status payload carries a `pricing` flag but no
+      // numeric amount, so costInr cannot be derived here and is left untouched.
       for (const status of change.value.statuses ?? []) {
-        // TODO: update WhatsAppLog row by metaMsgId with new status.
-        void status;
+        if (!status.id) continue;
+        try {
+          await prisma.whatsAppLog.updateMany({
+            where: { metaMsgId: status.id },
+            data: { status: status.status },
+          });
+        } catch (err: unknown) {
+          // eslint-disable-next-line no-console
+          console.error('[wa] status update error', err);
+        }
       }
     }
   }

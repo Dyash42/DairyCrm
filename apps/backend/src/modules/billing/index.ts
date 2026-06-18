@@ -4,19 +4,26 @@
  * GET /billing/invoices?period=YYYY-MM
  *   — synthesized monthly invoices: per active customer in the month,
  *     sum of delivered litres × ratePerLitre. Marks as PAID/PENDING
- *     based on whether any Payment row covers the amount.
+ *     based on whether payments cover the amount.
  *
  * Real invoicing later: PDF generation, GST line items, tax slabs.
  * For now, this returns the same shape the admin Billing screen mocks
  * so the UI can swap mock for live with no shape change.
+ *
+ * PER-04: the per-customer aggregation runs in SQL (Postgres `numeric`
+ * SUM is exact, so the result is at least as precise as the old
+ * Prisma.Decimal accumulation, and we no longer `findMany` every
+ * delivered row + its customer/subscription includes into memory — at
+ * 1k subscribers that was ~25k rows with joins on every Billing load).
+ * The per-Delivery snapshot rate is preferred, then the customer's
+ * ACTIVE subscription rate, then the settings default — same COALESCE
+ * chain as before, expressed in the query.
  */
 
 import type { App } from '../../types';
 import { z } from 'zod';
-import { DeliveryStatus } from '@prisma/client';
 
 import { prisma } from '../../prisma';
-import { Prisma } from '@prisma/client';
 import { DEFAULT_RATE_PER_LITRE_INR } from '../../constants';
 import { settings } from '../../services/settings';
 
@@ -60,130 +67,108 @@ export async function registerBillingRoutes(app: App) {
       const { period } = ListQuery.parse(req.query);
       const { from, to, label } = monthBounds(period);
 
-      // Settings-driven fallback rate. We still prefer the subscription's
-      // own cached rate (set at the time of subscribing — that's the rate
-      // the customer agreed to). Only when a delivery has no subscription
-      // we fall back to this. NOTE: this is the rate at THIS moment, not
-      // the rate when the delivery happened; capturing per-Delivery rate
-      // is a follow-up.
+      // Settings-driven fallback rate — used only when a delivery has neither
+      // its own snapshot rate nor an ACTIVE-subscription rate. NOTE: this is
+      // the rate at THIS moment, not when the delivery happened; the
+      // per-Delivery snapshot (preferred below) is what keeps past-month
+      // invoices stable across admin rate edits.
       const fallbackRate = await settings.getNumber(
         'pricing.default_rate_per_litre_inr',
         DEFAULT_RATE_PER_LITRE_INR,
       );
 
-      const deliveries = await prisma.delivery.findMany({
-        where: {
-          scheduledFor: { gte: from, lt: to },
-          status: { in: [DeliveryStatus.DELIVERED, DeliveryStatus.PARTIAL] },
-        },
-        include: {
-          customer: {
-            include: {
-              subscriptions: {
-                where: { status: 'ACTIVE' },
-                orderBy: { createdAt: 'desc' },
-                take: 1,
-              },
-              route: { select: { name: true } },
-            },
-          },
-        },
-      });
-
-      // Group per customer. All money math runs through Prisma.Decimal
-      // so we don't accumulate float errors across hundreds of
-      // deliveries. The previous code used `Number()` + `*` + `+=` which
-      // drifts a few paise per hundred deliveries — small per-row but
-      // adds up across the month.
-      const ZERO = new Prisma.Decimal(0);
-      const byCustomer = new Map<
-        string,
-        {
+      // Per-customer billed litres + amount, aggregated in SQL. The rate is
+      // COALESCE(delivery snapshot, customer's latest ACTIVE sub, settings
+      // default) — the same precedence the in-memory version used. Postgres
+      // `numeric` keeps the running sum exact; we cast the final value to
+      // float8 once for transport.
+      const billedRows = await prisma.$queryRaw<
+        Array<{
           id: string;
           customerName: string;
           customerCode: string;
           routeName: string;
-          litres: Prisma.Decimal;
-          amount: Prisma.Decimal;
-        }
-      >();
-      for (const d of deliveries) {
-        const litres = new Prisma.Decimal(d.deliveredLitres ?? d.scheduledLitres);
-        // Use the per-Delivery snapshotted rate when present (rows
-        // materialized after the 0003 migration). Older rows fall
-        // back to the customer's ACTIVE subscription rate, then to
-        // the settings default. The snapshot is the ONLY way to make
-        // past-month invoices stable across admin rate edits.
-        const rate = new Prisma.Decimal(
-          d.ratePerLitre ?? d.customer.subscriptions[0]?.ratePerLitre ?? fallbackRate,
-        );
-        const e = byCustomer.get(d.customerId) ?? {
-          id: d.customerId,
-          customerName: d.customer.name,
-          customerCode: d.customer.code,
-          routeName: d.customer.route?.name ?? '—',
-          litres: ZERO,
-          amount: ZERO,
-        };
-        e.litres = e.litres.add(litres);
-        e.amount = e.amount.add(litres.mul(rate));
-        byCustomer.set(d.customerId, e);
-      }
+          litres: number;
+          amount: number;
+        }>
+      >`
+        SELECT
+          d."customerId" AS id,
+          c."name" AS "customerName",
+          c."code" AS "customerCode",
+          COALESCE(r."name", '—') AS "routeName",
+          SUM(COALESCE(d."deliveredLitres", d."scheduledLitres"))::float8 AS litres,
+          SUM(
+            COALESCE(d."deliveredLitres", d."scheduledLitres")
+            * COALESCE(d."ratePerLitre", s."ratePerLitre", ${fallbackRate})
+          )::float8 AS amount
+        FROM "Delivery" d
+        JOIN "Customer" c ON c."id" = d."customerId"
+        LEFT JOIN "Route" r ON r."id" = c."routeId"
+        LEFT JOIN LATERAL (
+          SELECT "ratePerLitre"
+          FROM "Subscription"
+          WHERE "customerId" = d."customerId" AND "status"::text = 'ACTIVE'
+          ORDER BY "createdAt" DESC
+          LIMIT 1
+        ) s ON true
+        WHERE d."scheduledFor" >= ${from} AND d."scheduledFor" < ${to}
+          AND d."status"::text IN ('DELIVERED', 'PARTIAL')
+        GROUP BY d."customerId", c."name", c."code", r."name"
+      `;
 
-      // Sum payments per customer for the month. The previous code
-      // marked an invoice fully paid if ANY PAID payment existed in
-      // the window — a ₹50 cash row flipped a ₹5,000 monthly invoice
-      // to "paid". Now we compare sum-of-payments against
-      // sum-of-deliveries × rate; "paid" means sum >= invoice.
-      const payments = await prisma.payment.findMany({
-        where: { status: 'PAID', paidAt: { gte: from, lt: to } },
-        select: { customerId: true, amount: true, mode: true, paidAt: true },
-      });
-      const paidByCustomer = new Map<
-        string,
-        { total: Prisma.Decimal; lastMode: string }
-      >();
-      for (const p of payments) {
-        const cur = paidByCustomer.get(p.customerId) ?? { total: ZERO, lastMode: p.mode };
-        paidByCustomer.set(p.customerId, {
-          total: cur.total.add(p.amount),
-          lastMode: p.mode, // latest payment's mode (rows come ordered)
-        });
-      }
+      // Payments per customer for the window: cumulative total + the most
+      // recent payment's mode (the previous code's "last mode" was whatever
+      // order findMany happened to return; ordering by paidAt is at least
+      // deterministic).
+      const paidRows = await prisma.$queryRaw<
+        Array<{ id: string; total: number; lastMode: string }>
+      >`
+        SELECT
+          "customerId" AS id,
+          SUM("amount")::float8 AS total,
+          (ARRAY_AGG("mode"::text ORDER BY COALESCE("paidAt", "createdAt") DESC))[1] AS "lastMode"
+        FROM "Payment"
+        WHERE "status"::text = 'PAID' AND "paidAt" >= ${from} AND "paidAt" < ${to}
+        GROUP BY "customerId"
+      `;
+      const paidByCustomer = new Map(
+        paidRows.map((p) => [p.id, { total: Number(p.total), lastMode: p.lastMode }]),
+      );
 
-      const invoices = Array.from(byCustomer.values())
+      const invoices = billedRows
         .map((e) => {
+          const amount = Number(e.amount);
           const paid = paidByCustomer.get(e.id);
-          const paidTotal = paid?.total ?? ZERO;
-          // Customer fully paid if cumulative payments >= invoice amount.
-          // Compare with a 1-paise (₹0.01) tolerance to absorb stub-rate
-          // rounding artifacts; bigger gaps are real outstanding balance.
-          const fullyPaid = paidTotal.gte(e.amount.minus(new Prisma.Decimal(0.01)));
+          const paidTotal = paid?.total ?? 0;
+          // Fully paid if cumulative payments >= invoice amount, within a
+          // 1-paise tolerance to absorb stub-rate rounding artifacts.
+          const fullyPaid = paidTotal >= amount - 0.01;
           return {
             id: `inv-${e.id}-${period ?? 'current'}`,
             customerName: e.customerName,
             customerCode: e.customerCode,
             routeName: e.routeName,
             period: label,
-            litres: e.litres.toDP(1).toNumber(),
-            amount: e.amount.toDP(0).toNumber(),
-            paidAmount: paidTotal.toDP(0).toNumber(),
+            litres: Math.round(Number(e.litres) * 10) / 10,
+            amount: Math.round(amount),
+            paidAmount: Math.round(paidTotal),
             paid: fullyPaid,
             paidVia: paid?.lastMode ?? null,
           };
         })
         .sort((a, b) => b.amount - a.amount);
 
-      const billed = invoices.reduce((s, i) => s.add(i.amount), ZERO);
-      const collected = invoices.reduce((s, i) => s.add(i.paidAmount), ZERO);
+      const billed = invoices.reduce((s, i) => s + i.amount, 0);
+      const collected = invoices.reduce((s, i) => s + i.paidAmount, 0);
 
       return {
         period: label,
         invoices,
         totals: {
-          billed: billed.toDP(0).toNumber(),
-          collected: collected.toDP(0).toNumber(),
-          outstanding: billed.sub(collected).toDP(0).toNumber(),
+          billed: Math.round(billed),
+          collected: Math.round(collected),
+          outstanding: Math.round(billed - collected),
         },
       };
     },

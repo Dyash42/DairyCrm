@@ -223,9 +223,72 @@ function interpolate(s: string, vars: Record<string, string | number | undefined
   });
 }
 
-/** Admin: list all prompts, grouped naturally by flow. */
+/**
+ * Sentinel timestamp for prompts served from DEFAULT_PROMPTS (never edited in
+ * the DB). A fixed epoch keeps serialize()'s updatedAt.toISOString() safe and
+ * marks the row as "unmodified default" without adding a field the API/UI
+ * doesn't expect.
+ */
+const DEFAULT_PROMPT_UPDATED_AT = new Date(0);
+
+/** Collect every distinct ${var} token in a default prompt's editable copy. */
+function defaultPromptVariables(def: {
+  body: string;
+  buttons?: PromptButton[];
+  rows?: PromptRow[];
+}): string[] {
+  const found = new Set<string>();
+  const scan = (s: string): void => {
+    for (const m of s.matchAll(/\$\{(\w+)\}/g)) if (m[1]) found.add(m[1]);
+  };
+  scan(def.body);
+  for (const b of def.buttons ?? []) scan(b.title);
+  for (const r of def.rows ?? []) {
+    scan(r.title);
+    if (r.description) scan(r.description);
+  }
+  return Array.from(found);
+}
+
+/** Build a PromptDef from an in-code default (no DB row exists for this key). */
+function defaultToDef(key: string, def: {
+  kind: PromptKind;
+  body: string;
+  buttons?: PromptButton[];
+  rows?: PromptRow[];
+}): PromptDef {
+  return {
+    key,
+    flow: key.split('.')[0] ?? key,
+    label: key,
+    kind: def.kind,
+    body: def.body,
+    buttons: def.buttons,
+    rows: def.rows,
+    variables: defaultPromptVariables(def),
+    sortOrder: 0,
+    updatedAt: DEFAULT_PROMPT_UPDATED_AT,
+  };
+}
+
+/**
+ * Admin: list all prompts, grouped naturally by flow.
+ *
+ * Merges DEFAULT_PROMPTS with the cached DB overrides so the list ALWAYS
+ * reflects exactly what the bot will say (mirroring getPrompt's resolution):
+ * the cached/DB version wins per key, otherwise the in-code default is shown.
+ * Cached keys with no default are still included. Without this, an unseeded DB
+ * makes the admin editor look empty even though the bot serves the defaults.
+ */
 export function listBotPromptsFromCache(): PromptDef[] {
-  return Array.from(cache.values()).sort((a, b) => {
+  const merged = new Map<string, PromptDef>();
+  for (const [key, def] of Object.entries(DEFAULT_PROMPTS)) {
+    merged.set(key, defaultToDef(key, def));
+  }
+  for (const [key, def] of cache) {
+    merged.set(key, def);
+  }
+  return Array.from(merged.values()).sort((a, b) => {
     if (a.flow !== b.flow) return a.flow.localeCompare(b.flow);
     return a.sortOrder - b.sortOrder;
   });

@@ -641,6 +641,22 @@ export async function registerCustomerRoutes(app: App) {
             data: { litresPerDay: body.litresPerDay },
           });
         }
+        // DAT-08: a route reassignment must take effect TODAY. Today's delivery
+        // was already materialized with the OLD routeId (materialization snapshots
+        // the route), so re-point any of today's still-PENDING deliveries to the
+        // new route — otherwise the old route's milkman still sees the stop and
+        // the new one doesn't. Future days re-materialize from the customer's
+        // route, so only today's open rows need fixing.
+        if (body.routeId !== undefined) {
+          await tx.delivery.updateMany({
+            where: {
+              customerId: id,
+              scheduledFor: startOfBusinessDayUTC(),
+              status: DeliveryStatus.PENDING,
+            },
+            data: { routeId: body.routeId },
+          });
+        }
         return c;
       });
       return updated;

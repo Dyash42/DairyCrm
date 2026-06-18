@@ -11,6 +11,9 @@
 import type { ConversationState } from './types';
 import { getRedisOptional, isRedisEnabled } from '../redis';
 
+/** Inactivity window for a conversation. A 24h sliding TTL (audit CUS-11). */
+export const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
 export interface SessionStore {
   get(phone: string): Promise<ConversationState | null>;
   set(state: ConversationState): Promise<void>;
@@ -27,6 +30,10 @@ export class InMemorySessionStore implements SessionStore {
       this.map.delete(phone);
       return null;
     }
+    // Sliding window: an active conversation shouldn't expire mid-flow just
+    // because the customer paused between answers (audit CUS-11). Refresh the
+    // 24h window on each inbound read.
+    s.expiresAt = Date.now() + SESSION_TTL_MS;
     return s;
   }
 
@@ -54,6 +61,12 @@ export class RedisSessionStore implements SessionStore {
       await redis.del(this.key(phone));
       return null;
     }
+    // Sliding window: refresh the 24h expiry (both the in-payload value and the
+    // Redis key TTL) on each inbound so an in-progress flow doesn't expire
+    // between the customer's answers (audit CUS-11).
+    const ttlSec = SESSION_TTL_MS / 1000;
+    state.expiresAt = Date.now() + SESSION_TTL_MS;
+    await redis.set(this.key(phone), JSON.stringify(state), 'EX', ttlSec);
     return state;
   }
 
@@ -86,6 +99,6 @@ export function freshState(phone: string): ConversationState {
     step: null,
     context: {},
     updatedAt: now,
-    expiresAt: now + 24 * 60 * 60 * 1000,
+    expiresAt: now + SESSION_TTL_MS,
   };
 }

@@ -30,10 +30,22 @@ import { sender } from '../whatsapp/sender';
 import { TEMPLATES } from '../whatsapp/templates';
 import { captureException } from '../observability';
 
+/**
+ * One resolved broadcast recipient. customerId is the owning Customer so
+ * each WhatsAppLog row can be attributed back to a customer for
+ * per-customer audit / targeted retry (audit ADM-11). It is nullable only
+ * for genuinely customer-less recipients; here every recipient comes from
+ * a Customer row, so it is always populated.
+ */
+interface BroadcastRecipient {
+  customerId: string | null;
+  phone: string;
+}
+
 async function resolveRecipientPhones(
   target: 'ALL' | 'ROUTES' | 'CUSTOMERS',
   routeIds: string[],
-): Promise<string[]> {
+): Promise<BroadcastRecipient[]> {
   // CUSTOMERS isn't wired yet (the POST handler rejects with 422).
   // Treat as a no-op here so a row that somehow ended up scheduled
   // with target=CUSTOMERS doesn't blast everyone.
@@ -45,9 +57,9 @@ async function resolveRecipientPhones(
   }
   const customers = await prisma.customer.findMany({
     where,
-    select: { phone: true },
+    select: { id: true, phone: true },
   });
-  return customers.map((c) => c.phone);
+  return customers.map((c) => ({ customerId: c.id, phone: c.phone }));
 }
 
 /**
@@ -140,7 +152,7 @@ export async function runBroadcastSendOnce(
   }
 
   try {
-    const phones = await resolveRecipientPhones(
+    const recipients = await resolveRecipientPhones(
       b.target,
       b.routes.map((r) => r.routeId),
     );
@@ -151,7 +163,12 @@ export async function runBroadcastSendOnce(
     // the end (audit PER-05) instead of an await-per-recipient inside the
     // loop — that serialised a DB round-trip behind every send and was a
     // big part of the request-time blow-up.
+    //
+    // Each row carries customerId (audit ADM-11) so a log entry is
+    // attributable to a specific customer for per-customer audit and so
+    // the failed subset is retryable.
     const logRows: {
+      customerId: string | null;
       phone: string;
       direction: 'OUTBOUND';
       templateId: string;
@@ -160,7 +177,7 @@ export async function runBroadcastSendOnce(
       status: 'sent' | 'failed';
     }[] = [];
     const body = b.message.slice(0, 500);
-    for (const phone of phones) {
+    for (const { customerId, phone } of recipients) {
       try {
         await sender.send({
           kind: 'template',
@@ -170,6 +187,7 @@ export async function runBroadcastSendOnce(
         });
         delivered += 1;
         logRows.push({
+          customerId,
           phone,
           direction: 'OUTBOUND',
           templateId: TEMPLATES.broadcast_route_update.name,
@@ -180,6 +198,7 @@ export async function runBroadcastSendOnce(
       } catch {
         failedRecipients += 1;
         logRows.push({
+          customerId,
           phone,
           direction: 'OUTBOUND',
           templateId: TEMPLATES.broadcast_route_update.name,
@@ -197,15 +216,16 @@ export async function runBroadcastSendOnce(
         .catch(() => undefined);
     }
 
+    const recipientCount = recipients.length;
     const finalStatus =
-      failedRecipients === phones.length && phones.length > 0
+      failedRecipients === recipientCount && recipientCount > 0
         ? BroadcastStatus.FAILED
         : BroadcastStatus.SENT;
     await prisma.broadcast.update({
       where: { id: b.id },
       data: {
         status: finalStatus,
-        sentCount: phones.length,
+        sentCount: recipientCount,
         deliveredCount: delivered,
         failedCount: failedRecipients,
       },
@@ -215,7 +235,7 @@ export async function runBroadcastSendOnce(
       broadcastId,
       claimed: true,
       status: finalStatus,
-      sentCount: phones.length,
+      sentCount: recipientCount,
       deliveredCount: delivered,
       failedCount: failedRecipients,
     };

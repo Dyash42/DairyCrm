@@ -201,17 +201,26 @@ export async function registerDeliveryRoutes(app: App) {
 
       const me = req.user;
       let executiveId: string | null = null;
+      // Route-ownership constraint for executives. Folded INTO the atomic
+      // claim below (not checked in a separate read) so the guard and the
+      // status flip are one race-free statement — during a live route
+      // reassignment the exec can't confirm a delivery that moved off their
+      // route, nor be wrongly 403'd by a stale read (audit EDG-11). Admins
+      // (no executive row) have execRouteId === null and bypass the filter,
+      // so they may confirm anyone.
+      let execRouteId: string | null = null;
       if (me.role === 'EXECUTIVE') {
         const exec = await prisma.executive.findFirst({
           where: { userId: me.sub },
           select: { id: true, routeId: true },
         });
         executiveId = exec?.id ?? null;
-        // Guard against cross-route confirms. A stolen QR or accidental
-        // scan on another route shouldn't allow an executive to mark a
-        // customer they don't deliver to. Admins (no executive row)
-        // bypass this — they may confirm anyone.
-        if (exec && exec.routeId !== delivery.routeId) {
+        execRouteId = exec?.routeId ?? null;
+        // An executive with no assigned route can never own a delivery
+        // (deliveries always carry a non-null routeId), so reject up front
+        // — matches the prior `exec.routeId !== delivery.routeId` 403 and
+        // keeps the claim filter from degenerating into the admin bypass.
+        if (exec && !execRouteId) {
           return reply.status(403).send({
             error: 'Forbidden',
             message: 'Delivery is on another route',
@@ -241,7 +250,13 @@ export async function registerDeliveryRoutes(app: App) {
       // 3 retries.
       const result = await prisma.$transaction(async (tx) => {
         const claim = await tx.delivery.updateMany({
-          where: { id, status: DeliveryStatus.PENDING },
+          // The routeId predicate is the race-free ownership guard for
+          // executives; admins pass execRouteId === null and skip it.
+          where: {
+            id,
+            status: DeliveryStatus.PENDING,
+            ...(execRouteId ? { routeId: execRouteId } : {}),
+          },
           data: {
             status,
             deliveredLitres: actual,
@@ -251,13 +266,18 @@ export async function registerDeliveryRoutes(app: App) {
           },
         });
         if (claim.count !== 1) {
-          // Already confirmed (or skipped) — return current row as-is,
-          // do NOT touch payment/balance again. Idempotent retry.
+          // Claim missed: either already confirmed/skipped (idempotent
+          // retry) OR the row is on another route for this executive.
+          // Distinguish the two with the row's current routeId so we still
+          // 403 cross-route confirms instead of silently 200-ing them.
           const existing = await tx.delivery.findUnique({
             where: { id },
             include: { customer: true },
           });
-          return { row: existing!, alreadyDone: true as const };
+          if (existing && execRouteId && existing.routeId !== execRouteId) {
+            return { forbidden: true as const, alreadyDone: false as const };
+          }
+          return { forbidden: false as const, row: existing!, alreadyDone: true as const };
         }
         const updated = await tx.delivery.findUnique({
           where: { id },
@@ -281,9 +301,17 @@ export async function registerDeliveryRoutes(app: App) {
           });
         }
 
-        return { row: updated!, alreadyDone: false as const };
+        return { forbidden: false as const, row: updated!, alreadyDone: false as const };
       });
 
+      // Cross-route confirm attempt detected inside the atomic claim — same
+      // 403 the pre-claim read used to return, now race-safe (audit EDG-11).
+      if (result.forbidden) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'Delivery is on another route',
+        });
+      }
       // Surface "already confirmed" with a 200 + idempotent flag — the
       // mobile offline-sync engine treats this the same as success and
       // won't enqueue another retry. Caller still gets the row body.

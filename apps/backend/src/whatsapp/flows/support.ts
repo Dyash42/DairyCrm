@@ -83,12 +83,10 @@ export const supportFlow: FlowHandler = {
           to: phone,
           body: getPrompt('support.missed.logged', { date: text }).body,
         });
-        ctx.patchState({ step: 'await_close', context: {} });
-        return;
-      }
-
-      case 'await_close': {
-        // Any reply closes the loop.
+        // CUS-10: close the loop immediately instead of parking in
+        // 'await_close' (which kept flow='support' and would intercept the
+        // customer's next real message). Send the close confirmation once
+        // and end the flow right here, matching how other flows reset.
         const cust = await ctx.repos.findCustomerByPhone(phone);
         ctx.send({
           kind: 'template',

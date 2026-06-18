@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 
 import { loadConfig } from '../../config';
 import { DEFAULT_TEMPLATE_LANGUAGE } from '../../constants';
+import { TEMPLATES } from '../../whatsapp/templates';
 import type { OutboundAction } from '../../whatsapp/types';
 import type { MessagingProvider } from './types';
 
@@ -98,7 +99,10 @@ function buildMetaPayload(action: OutboundAction): Record<string, unknown> {
             ? [
                 {
                   type: 'body',
-                  parameters: Object.values(action.variables).map((text) => ({
+                  parameters: orderTemplateParameters(
+                    action.templateName,
+                    action.variables,
+                  ).map((text) => ({
                     type: 'text',
                     text,
                   })),
@@ -145,4 +149,39 @@ function buildMetaPayload(action: OutboundAction): Record<string, unknown> {
         },
       };
   }
+}
+
+/**
+ * Order body parameters by the template's DECLARED slot array
+ * (TEMPLATES[name].variables), so {{1}},{{2}},... always map to the slots the
+ * approved Meta template expects — regardless of the key-insertion order of the
+ * variables object built at the call site. Mapping by Object.values insertion
+ * order silently transposes numbers in billing-facing messages (INT-05).
+ *
+ * If the template is unknown or declares no slots, fall back to insertion order
+ * (preserves prior behavior for ad-hoc/unregistered templates). When the
+ * declared order is known, a missing slot is a wiring bug → throw at send time
+ * so we fail loud instead of sending wrong numbers.
+ */
+function orderTemplateParameters(
+  templateName: string,
+  variables: Record<string, string>,
+): string[] {
+  const template = (TEMPLATES as Record<string, { variables: readonly string[] }>)[
+    templateName
+  ];
+  const slots = template?.variables;
+  if (!slots || slots.length === 0) {
+    // Unknown template or no declared slots — preserve today's behavior.
+    return Object.values(variables);
+  }
+  return slots.map((slot) => {
+    const value = variables[slot];
+    if (value === undefined) {
+      throw new Error(
+        `Missing template variable "${slot}" for template "${templateName}"`,
+      );
+    }
+    return value;
+  });
 }

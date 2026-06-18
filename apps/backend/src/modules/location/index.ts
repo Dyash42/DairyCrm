@@ -56,16 +56,22 @@ export async function registerLocationRoutes(app: App) {
       if (row.expiresAt < new Date()) return reply.status(410).send({ error: 'Expired' });
       if (row.usedAt) return reply.status(409).send({ error: 'AlreadyUsed' });
 
-      await prisma.$transaction([
-        prisma.customer.update({
+      // Compare-and-swap the consume so concurrent POSTs can't both claim the
+      // token: only the writer that flips usedAt from NULL wins. The early
+      // read above is just a fast-path 409 — this updateMany is the authority.
+      const claimed = await prisma.$transaction(async (tx) => {
+        const claim = await tx.locationToken.updateMany({
+          where: { token, usedAt: null },
+          data: { usedAt: new Date() },
+        });
+        if (claim.count === 0) return false;
+        await tx.customer.update({
           where: { id: row.customerId },
           data: { lat: body.lat, lng: body.lng, geoUpdatedAt: new Date() },
-        }),
-        prisma.locationToken.update({
-          where: { token },
-          data: { usedAt: new Date() },
-        }),
-      ]);
+        });
+        return true;
+      });
+      if (!claimed) return reply.status(409).send({ error: 'AlreadyUsed' });
       return { ok: true };
     },
   });

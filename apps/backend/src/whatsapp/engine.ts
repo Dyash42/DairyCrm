@@ -167,12 +167,30 @@ export class ConversationEngine {
         repos: this.repos,
       };
 
+      let handled = false;
       for (const flow of FLOWS) {
         const matched = await Promise.resolve(flow.matches(ctx));
         if (matched) {
           await flow.handle(ctx);
+          handled = true;
           break;
         }
+      }
+
+      // Onboarding-completion nudge (audit CUS-11). If NO flow matched, the
+      // message fell through to silence — this only happens when the session is
+      // fresh/expired (flow === null) AND the inbound is not a greeting/menu
+      // trigger the menuFlow recognises (and not a location, which locationFlow
+      // always takes). A customer who abandoned onboarding and replies a bare
+      // answer like "2" >24h later lands here; without a nudge the bot looks
+      // dead. Active-flow routing and the normal greeting path already matched
+      // above, so they never reach this branch.
+      if (!handled) {
+        ctx.send({
+          kind: 'text',
+          to: message.from,
+          body: "Sorry, I didn't catch that. Let's start over — send \"Hi\" to begin.",
+        });
       }
 
       await sessionStore.set(nextState);

@@ -7,7 +7,7 @@
  * Triggered from the menu when user picks "Renew subscription".
  */
 
-import type { FlowContext, FlowHandler } from '../types';
+import type { FlowContext, FlowHandler, SubscriptionIntent } from '../types';
 import { TEMPLATES } from '../templates';
 import { getPrompt } from '../prompts';
 import {
@@ -17,11 +17,11 @@ import {
 // BAC-03: use the EXACT calendar delivery counter (same one the scheduler/
 // materializer uses) instead of the round(duration*dow/7) approximation, so
 // the charged amount equals the deliveries actually delivered.
-import {
-  countDeliveriesInRange,
-  type WeekdayNumber,
-} from '../../services/subscription-calc';
+import { countDeliveriesInRange } from '../../services/subscription-calc';
 import { startOfBusinessDayUTC } from '../../utils/dates';
+// Shared with onboarding so both money flows parse/label day patterns identically.
+import { parseDaysOfWeek, formatDayPattern } from '../day-pattern';
+import { buildActivationActions } from '../activation';
 
 interface RenewCtx {
   litresPerDay?: number;
@@ -101,10 +101,18 @@ export const renewFlow: FlowHandler = {
         const deliveries = countDeliveriesInRange(startDate, duration, dow);
         const total = Math.round(deliveries * litres * rate);
 
+        // EDG-02: carry the renew intent so the webhook auto-activates on PAID.
+        const intent: SubscriptionIntent = {
+          kind: 'renew',
+          litresPerDay: litres,
+          daysOfWeek: dow,
+          durationDays: duration,
+        };
         const link = await ctx.repos.createPaymentLink({
           customerId: ctx.state.customerId ?? '',
           amount: total,
           note: `Jharanai renew · ${litres}L × ${deliveries} deliveries`,
+          subscriptionIntent: intent,
         });
 
         ctx.patchState({
@@ -138,27 +146,36 @@ export const renewFlow: FlowHandler = {
       }
 
       case 'await_payment': {
-        // Same payment-verified gate as onboarding: activate only on a
-        // webhook-confirmed PAID payment (dev shortcut in non-prod only).
+        // Primary activation is the signature-verified webhook (EDG-02); this
+        // is the idempotent message-driven fallback. consumePaymentIntent's CAS
+        // guarantees the renewal is applied exactly once across both paths so a
+        // returning "paid" message can't double-extend the subscription. Dev
+        // shortcut in non-prod only.
         const status = slot.paymentId
           ? await ctx.repos.getPaymentStatus(slot.paymentId)
           : null;
         const devOverride =
           process.env.NODE_ENV !== 'production' && /paid|success|done/i.test(text);
-        if ((status === 'PAID' || devOverride) && ctx.state.customerId) {
-          await ctx.repos.activateSubscription({
-            customerId: ctx.state.customerId,
-            litresPerDay: slot.litresPerDay ?? 1,
-            daysOfWeek: slot.daysOfWeek ?? [1, 2, 3, 4, 5, 6],
-            durationDays: slot.durationDays ?? 30,
-          });
-          const cust = await ctx.repos.findCustomerByPhone(phone);
-          ctx.send({
-            kind: 'template',
-            to: phone,
-            templateName: TEMPLATES.renew_confirmed.name,
-            variables: { name: cust?.name ?? 'there' },
-          });
+        if (slot.paymentId && (status === 'PAID' || devOverride) && ctx.state.customerId) {
+          const intent = await ctx.repos.consumePaymentIntent(slot.paymentId);
+          if (intent) {
+            await ctx.repos.activateSubscription({
+              customerId: ctx.state.customerId,
+              litresPerDay: intent.litresPerDay,
+              daysOfWeek: intent.daysOfWeek,
+              durationDays: intent.durationDays,
+            });
+            const cust = await ctx.repos.findCustomerByPhone(phone);
+            for (const action of buildActivationActions(intent, phone, cust?.name ?? 'there')) {
+              ctx.send(action);
+            }
+          } else {
+            ctx.send({
+              kind: 'text',
+              to: phone,
+              body: 'You’re all set ✅ Your subscription is renewed.',
+            });
+          }
           ctx.patchState({ flow: null, step: null, context: {} });
         } else {
           ctx.send({ kind: 'text', to: phone, body: getPrompt('payment.not_received').body });
@@ -171,39 +188,3 @@ export const renewFlow: FlowHandler = {
     }
   },
 };
-
-/**
- * Parse the customer's free-text day pattern into a sorted weekday list.
- *
- * CUS-07: returns `null` for unrecognized input so the caller can re-prompt
- * instead of silently defaulting to Mon–Sat and charging the wrong amount.
- */
-function parseDaysOfWeek(text: string): WeekdayNumber[] | null {
-  const lower = text.toLowerCase();
-  if (lower.includes('all') || lower.includes('every') || lower.includes('daily')) {
-    return [0, 1, 2, 3, 4, 5, 6];
-  }
-  if (lower.includes('mon-sat') || lower.includes('mon–sat') || lower.includes('mon to sat')) {
-    return [1, 2, 3, 4, 5, 6];
-  }
-  if (lower.includes('weekday')) return [1, 2, 3, 4, 5];
-  if (lower.includes('weekend')) return [0, 6];
-  return null; // unparseable — caller re-prompts
-}
-
-/**
- * CUS-07: render a normalized human label for a parsed weekday list, so the
- * renew_quote template shows a clean pattern ("Every day", "Mon–Sat",
- * "Weekdays", "Weekends") rather than echoing the raw user text. Falls back
- * to a short comma list of weekday abbreviations for any other combination.
- */
-function formatDayPattern(daysOfWeek: WeekdayNumber[]): string {
-  const sorted = [...daysOfWeek].sort((a, b) => a - b);
-  const key = sorted.join(',');
-  if (key === '0,1,2,3,4,5,6') return 'Every day';
-  if (key === '1,2,3,4,5,6') return 'Mon–Sat';
-  if (key === '1,2,3,4,5') return 'Weekdays';
-  if (key === '0,6') return 'Weekends';
-  const NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  return sorted.map((d) => NAMES[d]).join(', ');
-}

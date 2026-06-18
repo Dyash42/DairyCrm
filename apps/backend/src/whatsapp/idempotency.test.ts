@@ -29,6 +29,9 @@ const repos: BotRepos = {
   async getPaymentStatus() {
     return 'PAID';
   },
+  async consumePaymentIntent() {
+    return null;
+  },
   async getRatePerLitre() {
     return 64;
   },

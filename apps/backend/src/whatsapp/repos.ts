@@ -10,6 +10,7 @@ import {
   CustomerStatus,
   PaymentMode,
   PaymentStatus,
+  Prisma,
   QrCodeStatus,
   RenewalReminderStatus,
   SubscriptionStatus,
@@ -27,8 +28,8 @@ import { startOfBusinessDayUTC } from '../utils/dates';
 import { nextCustomerCode } from '../services/customer-code';
 import { buildVersionedQrPayload, generateQrDataUrl } from '../services/qrcode';
 import { settings } from '../services/settings';
-import { createRazorpayPaymentLink } from './payment';
-import type { BotRepos } from './types';
+import { createPaymentLink as createGatewayPaymentLink } from './payment';
+import type { BotRepos, SubscriptionIntent } from './types';
 
 /**
  * Resolve the live per-litre rate the same way the admin /subscriptions
@@ -104,7 +105,7 @@ export const prismaBotRepos: BotRepos = {
     // reconciles by this reference (razorpay entity.id / cashfree link_id),
     // flips it to PAID and credits Customer.balance. Without this row the
     // webhook always hit "unknown reference" and a real payment was lost.
-    const link = await createRazorpayPaymentLink({
+    const link = await createGatewayPaymentLink({
       customerId: input.customerId,
       amount: input.amount,
       note: input.note,
@@ -116,6 +117,11 @@ export const prismaBotRepos: BotRepos = {
         mode: PaymentMode.UPI_ONLINE,
         status: PaymentStatus.PENDING,
         reference: link.id,
+        // EDG-02: stash the activation intent so the webhook can finalize the
+        // subscription on PAID without a second customer message.
+        ...(input.subscriptionIntent
+          ? { subscriptionIntent: input.subscriptionIntent as unknown as Prisma.InputJsonValue }
+          : {}),
       },
     });
     return { url: link.url, paymentId: payment.id };
@@ -124,6 +130,23 @@ export const prismaBotRepos: BotRepos = {
   async getPaymentStatus(paymentId) {
     const p = await prisma.payment.findUnique({ where: { id: paymentId } });
     return p ? p.status : null;
+  },
+
+  async consumePaymentIntent(paymentId) {
+    // EDG-02: atomic compare-and-swap. Exactly one caller (webhook OR the
+    // customer's next inbound) flips intentConsumedAt from null and gets the
+    // intent; everyone else gets null. This guarantees a paid subscription is
+    // activated once and only once, so a retried webhook + a "paid" message
+    // can never double-extend the subscription.
+    const claim = await prisma.payment.updateMany({
+      where: { id: paymentId, intentConsumedAt: null },
+      data: { intentConsumedAt: new Date() },
+    });
+    if (claim.count !== 1) return null;
+    const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+    const raw = payment?.subscriptionIntent;
+    if (!raw || typeof raw !== 'object') return null;
+    return raw as unknown as SubscriptionIntent;
   },
 
   async saveCustomerLocation(input) {

@@ -9,10 +9,14 @@
  * Meta-approved templates stay in code (see ../templates.ts).
  */
 
-import type { FlowContext, FlowHandler } from '../types';
+import type { FlowContext, FlowHandler, SubscriptionIntent } from '../types';
 import { TEMPLATES } from '../templates';
 import { getPrompt } from '../prompts';
 import { loadConfig } from '../../config';
+import { countDeliveriesInRange } from '../../services/subscription-calc';
+import { startOfBusinessDayUTC } from '../../utils/dates';
+import { parseDaysOfWeek } from '../day-pattern';
+import { buildActivationActions, pinPageBaseUrl } from '../activation';
 
 interface OnboardCtx {
   name?: string;
@@ -21,6 +25,8 @@ interface OnboardCtx {
   altPhone?: string;
   litresPerDay?: number;
   durationDays?: number;
+  /** Chosen delivery weekdays (0=Sun..6=Sat) — BAC-04 honours the pattern. */
+  daysOfWeek?: number[];
   /** Local Payment row id for the issued link — used to verify payment. */
   paymentId?: string;
 }
@@ -152,21 +158,54 @@ export const onboardingFlow: FlowHandler = {
           ctx.send({ kind: 'text', to: phone, body: getPrompt('onboarding.ask_days.retry').body });
           return;
         }
+        // BAC-04/CUS-09: ask the day-of-week pattern before quoting, so a
+        // customer who wants Mon–Sat / weekdays-only isn't force-enrolled in
+        // 7-day delivery (and billed for it). The quote is computed once the
+        // pattern is known.
+        const newCtx: OnboardCtx = { ...slot, durationDays: days };
+        ctx.patchState({ step: 'ask_days_pattern', context: newCtx as Record<string, unknown> });
+        ctx.send({ kind: 'text', to: phone, body: getPrompt('onboarding.ask_days_pattern').body });
+        return;
+      }
+
+      case 'ask_days_pattern': {
+        const dow = parseDaysOfWeek(text);
+        if (!dow) {
+          ctx.send({
+            kind: 'text',
+            to: phone,
+            body: getPrompt('onboarding.ask_days_pattern.retry').body,
+          });
+          return;
+        }
         const litres = slot.litresPerDay ?? 0;
+        const duration = slot.durationDays ?? 30;
         // Resolve the live rate the SAME way activation does, so the payment
         // link amount can never diverge from the rate the subscription stores.
         const rate = await ctx.repos.getRatePerLitre();
-        const total = Math.round(litres * days * rate);
+        // BAC-04/DAT-05: bill for the deliveries we will ACTUALLY make over the
+        // chosen window + pattern, using the exact same counter the scheduler
+        // materializes from — so billed === delivered for any day pattern.
+        const deliveries = countDeliveriesInRange(startOfBusinessDayUTC(), duration, dow);
+        const total = Math.round(deliveries * litres * rate);
 
-        // Create the hosted link + PENDING Payment up front so we can verify
-        // the customer actually paid before activating the subscription.
+        // EDG-02: stash the activation intent on the PENDING Payment so the
+        // signature-verified webhook can finalize the subscription on PAID
+        // without waiting for the customer to message again.
+        const intent: SubscriptionIntent = {
+          kind: 'onboarding',
+          litresPerDay: litres,
+          daysOfWeek: dow,
+          durationDays: duration,
+        };
         const link = await ctx.repos.createPaymentLink({
           customerId: ctx.state.customerId ?? '',
           amount: total,
-          note: `Jharanai subscription · ${litres}L × ${days} days`,
+          note: `Jharanai subscription · ${litres}L × ${deliveries} deliveries`,
+          subscriptionIntent: intent,
         });
 
-        const newCtx: OnboardCtx = { ...slot, durationDays: days, paymentId: link.paymentId };
+        const newCtx: OnboardCtx = { ...slot, daysOfWeek: dow, paymentId: link.paymentId };
         ctx.patchState({ step: 'await_payment', context: newCtx as Record<string, unknown> });
 
         ctx.send({
@@ -175,7 +214,10 @@ export const onboardingFlow: FlowHandler = {
           templateName: TEMPLATES.onboarding_payment_link.name,
           variables: {
             litres: String(litres),
-            days: String(days),
+            // The template's {{2}} slot reads "<days>" — we pass the count of
+            // delivery days (= deliveries) so "litres × days × rate = total"
+            // stays an accurate equation under a non-every-day pattern.
+            days: String(deliveries),
             rate: String(rate),
             total: String(total),
           },
@@ -185,39 +227,40 @@ export const onboardingFlow: FlowHandler = {
       }
 
       case 'await_payment': {
-        // Activate ONLY when the signature-verified gateway webhook has marked
-        // the Payment PAID. The old code activated on the mere text "paid" with
-        // zero verification — anyone could obtain a free subscription. The dev
-        // shortcut is kept for non-production only so local testing works
-        // without a real gateway.
+        // Primary activation path is the signature-verified webhook (EDG-02).
+        // This message-driven path is the idempotent fallback: a customer who
+        // returns and says "paid" after the webhook already ran gets a simple
+        // reassurance (consumePaymentIntent returns null → no double activate).
+        // The dev shortcut is kept for non-production only so local testing
+        // works without a real gateway.
         const status = slot.paymentId
           ? await ctx.repos.getPaymentStatus(slot.paymentId)
           : null;
         const devOverride =
           process.env.NODE_ENV !== 'production' && /paid|success|done/i.test(text);
-        if ((status === 'PAID' || devOverride) && ctx.state.customerId) {
-          await ctx.repos.activateSubscription({
-            customerId: ctx.state.customerId,
-            litresPerDay: slot.litresPerDay ?? 0,
-            daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
-            durationDays: slot.durationDays ?? 30,
-          });
-          ctx.send({
-            kind: 'template',
-            to: phone,
-            templateName: TEMPLATES.subscription_activated.name,
-            variables: { litres_per_day: String(slot.litresPerDay ?? 0) },
-          });
-          // Capture the door location for last-mile navigation. The general
-          // location flow saves whatever location the customer sends next;
-          // the link lets them set it on a map if they're not home.
-          const tok = await ctx.repos.createLocationToken(ctx.state.customerId);
-          const base = loadConfig().ADMIN_ORIGIN.replace(/\/+$/, '');
-          ctx.send({
-            kind: 'text',
-            to: phone,
-            body: getPrompt('location.request', { pin_url: `${base}/pin/${tok.token}` }).body,
-          });
+        if (slot.paymentId && (status === 'PAID' || devOverride) && ctx.state.customerId) {
+          const intent = await ctx.repos.consumePaymentIntent(slot.paymentId);
+          if (intent) {
+            await ctx.repos.activateSubscription({
+              customerId: ctx.state.customerId,
+              litresPerDay: intent.litresPerDay,
+              daysOfWeek: intent.daysOfWeek,
+              durationDays: intent.durationDays,
+            });
+            // Capture the door location for last-mile navigation (INT-08: link
+            // built from the public pin origin, not the locked-down admin one).
+            const tok = await ctx.repos.createLocationToken(ctx.state.customerId);
+            const pinUrl = `${pinPageBaseUrl()}/pin/${tok.token}`;
+            for (const action of buildActivationActions(intent, phone, slot.name ?? '', pinUrl)) {
+              ctx.send(action);
+            }
+          } else {
+            ctx.send({
+              kind: 'text',
+              to: phone,
+              body: 'You’re all set ✅ Your subscription is active.',
+            });
+          }
           ctx.patchState({ flow: null, step: null, context: {} });
         } else {
           ctx.send({ kind: 'text', to: phone, body: getPrompt('payment.not_received').body });

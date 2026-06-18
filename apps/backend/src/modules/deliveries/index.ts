@@ -67,6 +67,17 @@ async function materializeTodaysDeliveries(today: Date) {
 // invocations to materialize against yesterday's date.
 const startOfTodayUTC = startOfBusinessDayUTC;
 
+// PER-09: stable route-sequence comparator. Customers without a routeSeq sort
+// last (a milkman orders by their walking sequence; unsequenced stops trail).
+function byRouteSeq(
+  a: { customer: { routeSeq: number | null } },
+  b: { customer: { routeSeq: number | null } },
+): number {
+  const sa = a.customer.routeSeq ?? Number.MAX_SAFE_INTEGER;
+  const sb = b.customer.routeSeq ?? Number.MAX_SAFE_INTEGER;
+  return sa - sb;
+}
+
 const ConfirmBody = z.object({
   deliveredLitres: z.coerce.number().min(0).max(50).optional(),
   /**
@@ -117,6 +128,11 @@ export async function registerDeliveryRoutes(app: App) {
       const where: Record<string, unknown> = { scheduledFor: today };
       if (routeId) where.routeId = routeId;
 
+      // PER-09: filter is index-backed (@@index([routeId, scheduledFor])), but
+      // ordering by the JOINED customer.routeSeq has no index and forces a
+      // relational in-memory sort in Postgres on every call. A single route's
+      // day is bounded (tens–hundreds of stops), so sort the small result set
+      // in JS instead — the DB does only the indexed filter.
       const deliveries = await prisma.delivery.findMany({
         where,
         include: {
@@ -133,8 +149,8 @@ export async function registerDeliveryRoutes(app: App) {
           },
           product: { select: { name: true } },
         },
-        orderBy: { customer: { routeSeq: 'asc' } },
       });
+      deliveries.sort(byRouteSeq);
       return { date: today.toISOString(), routeId, deliveries };
     },
   });
@@ -185,8 +201,8 @@ export async function registerDeliveryRoutes(app: App) {
           },
           product: { select: { name: true } },
         },
-        orderBy: { customer: { routeSeq: 'asc' } },
       });
+      deliveries.sort(byRouteSeq); // PER-09: index-backed filter, JS sort
       return { date: today.toISOString(), routeId, deliveries };
     },
   });
@@ -335,13 +351,18 @@ export async function registerDeliveryRoutes(app: App) {
 
       const me = req.user;
       let executiveId: string | null = null;
+      // EDG-11: fold route-ownership into the atomic claim (same as /confirm) so
+      // a live route reassignment can't let an exec skip a delivery that moved
+      // off their route, nor wrongly 403 them via a stale pre-read.
+      let execRouteId: string | null = null;
       if (me.role === 'EXECUTIVE') {
         const exec = await prisma.executive.findFirst({
           where: { userId: me.sub },
           select: { id: true, routeId: true },
         });
         executiveId = exec?.id ?? null;
-        if (exec && exec.routeId !== delivery.routeId) {
+        execRouteId = exec?.routeId ?? null;
+        if (exec && !execRouteId) {
           return reply.status(403).send({
             error: 'Forbidden',
             message: 'Delivery is on another route',
@@ -353,7 +374,11 @@ export async function registerDeliveryRoutes(app: App) {
       // queue lands on the already-SKIPPED row, claim.count===0, and
       // we return the existing row with idempotent flag.
       const claim = await prisma.delivery.updateMany({
-        where: { id, status: DeliveryStatus.PENDING },
+        where: {
+          id,
+          status: DeliveryStatus.PENDING,
+          ...(execRouteId ? { routeId: execRouteId } : {}),
+        },
         data: {
           status: DeliveryStatus.SKIPPED,
           note: body.reason ?? 'Skipped',
@@ -365,6 +390,14 @@ export async function registerDeliveryRoutes(app: App) {
         include: { customer: true },
       });
       if (claim.count !== 1) {
+        // Distinguish a cross-route skip attempt from an idempotent retry, the
+        // same way /confirm does.
+        if (current && execRouteId && current.routeId !== execRouteId) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'Delivery is on another route',
+          });
+        }
         return reply
           .header('x-idempotent', '1')
           .status(200)

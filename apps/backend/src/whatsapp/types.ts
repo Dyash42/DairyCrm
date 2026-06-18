@@ -76,6 +76,20 @@ export interface FlowContext {
   repos: BotRepos;
 }
 
+/**
+ * EDG-02: the subscription parameters captured on a PENDING Payment so the
+ * signature-verified payment webhook can activate the subscription the instant
+ * it flips to PAID — without waiting for the customer to message the bot again.
+ * `kind` decides which confirmation the customer receives (and whether to send
+ * the door-pin link, which only onboarding needs).
+ */
+export interface SubscriptionIntent {
+  kind: 'onboarding' | 'renew';
+  litresPerDay: number;
+  daysOfWeek: number[];
+  durationDays: number;
+}
+
 export interface BotRepos {
   findCustomerByPhone(phone: string): Promise<{ id: string; name: string; code: string } | null>;
   createCustomer(input: {
@@ -96,11 +110,20 @@ export interface BotRepos {
     customerId: string;
     amount: number;
     note: string;
+    /** EDG-02: when set, the webhook can auto-activate on PAID. */
+    subscriptionIntent?: SubscriptionIntent;
   }): Promise<{ url: string; paymentId: string }>;
   /** Current status of a Payment row, or null if it doesn't exist. */
   getPaymentStatus(
     paymentId: string,
   ): Promise<'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED' | null>;
+  /**
+   * EDG-02 idempotency gate: atomically claim a Payment's activation intent
+   * (compare-and-swap on intentConsumedAt). Returns the intent exactly once —
+   * whichever caller wins (the webhook OR the customer's next message) — and
+   * null thereafter, so activation can never run twice for one payment.
+   */
+  consumePaymentIntent(paymentId: string): Promise<SubscriptionIntent | null>;
   /** Resolve the live per-litre rate (Product COW_MILK → settings → default). */
   getRatePerLitre(): Promise<number>;
   /** Save the customer's door location (lat/lng) for navigation. */

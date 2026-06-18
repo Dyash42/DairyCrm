@@ -80,6 +80,17 @@ const DEFAULT_PROMPTS: Record<
   'onboarding.qr_caption': { kind: 'text', body: 'This is your Jharanai QR (${customerCode}). The delivery partner scans it at your door.' },
   'onboarding.ask_days': { kind: 'text', body: 'For how many days would you like to subscribe? e.g. 30' },
   'onboarding.ask_days.retry': { kind: 'text', body: 'Please enter the number of days, e.g. 30.' },
+  // BAC-04/CUS-09: onboarding now honours a day-of-week pattern (was always
+  // every-day), matching the renew/admin paths and billing only for the days
+  // we actually deliver.
+  'onboarding.ask_days_pattern': {
+    kind: 'text',
+    body: 'Which days should we deliver? Reply "every day", "Mon-Sat", "weekdays", or "weekends".',
+  },
+  'onboarding.ask_days_pattern.retry': {
+    kind: 'text',
+    body: 'Please reply with a delivery pattern: "every day", "Mon-Sat", "weekdays", or "weekends".',
+  },
   // ---- payment (shared) ----
   'payment.not_received': {
     kind: 'text',

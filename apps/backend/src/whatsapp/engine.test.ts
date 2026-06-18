@@ -67,6 +67,16 @@ function makeRepos(
     async getPaymentStatus() {
       return paymentStatus;
     },
+    async consumePaymentIntent() {
+      // EDG-02: stub the intent claim as "won" so the message-driven fallback
+      // activates (matches a fresh PAID payment whose webhook hasn't run yet).
+      return {
+        kind: 'onboarding' as const,
+        litresPerDay: 1,
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+        durationDays: 30,
+      };
+    },
     async getRatePerLitre() {
       return 64;
     },
@@ -195,8 +205,9 @@ describe('ConversationEngine — onboarding payment calc', () => {
     await engine.process(makeText(phone, 'a@b.c')); // → ask_alt_phone
     await engine.process(makeText(phone, 'skip')); // → ask_litres
     await engine.process(makeText(phone, '1')); // → ask_days
+    await engine.process(makeText(phone, '30')); // → ask_days_pattern
     sender.outbox.length = 0;
-    await engine.process(makeText(phone, '30')); // → await_payment
+    await engine.process(makeText(phone, 'every day')); // → await_payment
 
     // Find the payment-link template the engine sent.
     const tpl = sender.outbox.find(
@@ -293,7 +304,8 @@ describe('ConversationEngine — onboarding payment activation (verified)', () =
     await engine.process(makeText(phone, 'a@b.c'));
     await engine.process(makeText(phone, 'skip'));
     await engine.process(makeText(phone, '1'));
-    await engine.process(makeText(phone, '30')); // → await_payment
+    await engine.process(makeText(phone, '30')); // → ask_days_pattern
+    await engine.process(makeText(phone, 'every day')); // → await_payment
   }
 
   it('activates once the gateway has marked the payment PAID', async () => {

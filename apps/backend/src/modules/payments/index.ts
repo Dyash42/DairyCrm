@@ -20,6 +20,7 @@ import { PaymentMode, PaymentStatus } from '@prisma/client';
 import { prisma } from '../../prisma';
 import { getPaymentProvider } from '../../providers/payment';
 import { notFound, isUniqueConstraintError } from '../../utils/http';
+import { activatePaidSubscriptionFromWebhook } from '../../whatsapp/activation';
 
 const RecordBody = z.object({
   customerId: z.string(),
@@ -134,7 +135,7 @@ export async function registerPaymentRoutes(app: App) {
           where: { id: payment.customerId },
           data: { balance: { increment: payment.amount } },
         });
-        return { kind: 'paid' as const };
+        return { kind: 'paid' as const, paymentId: payment.id };
       });
 
       if (result.kind === 'unknown') {
@@ -148,6 +149,19 @@ export async function registerPaymentRoutes(app: App) {
       if (result.kind === 'amount-mismatch') {
         req.log.warn({ reference, ...result }, 'webhook amount mismatch — refusing credit');
         return reply.status(409).send({ error: 'AmountMismatch' });
+      }
+      // EDG-02: the payment just flipped to PAID — finalize any WhatsApp
+      // onboarding/renew it funded, the moment the gateway confirms, instead of
+      // stranding the customer until they message the bot again. Idempotent
+      // (CAS on the intent) and best-effort: a messaging hiccup must not fail
+      // the webhook, or the gateway will retry and re-credit checks will trip.
+      try {
+        await activatePaidSubscriptionFromWebhook(result.paymentId);
+      } catch (err) {
+        req.log.error(
+          { err, paymentId: result.paymentId },
+          'post-payment subscription activation failed',
+        );
       }
       return reply.status(200).send({ ok: true });
     },

@@ -145,7 +145,20 @@ export async function registerSubscriptionRoutes(app: App) {
         durationDays,
       });
 
-      const sub = await prisma.$transaction(async (tx) => {
+      const result = await prisma.$transaction(async (tx) => {
+        // EDG-03: enforce ONE active subscription per customer. Without this, an
+        // admin creating a sub for a customer who already has one (e.g. they
+        // onboarded via WhatsApp) leaves two ACTIVE rows — the dashboard counts
+        // double and "cancel" only cancels one. Reject instead; to change an
+        // existing plan the admin cancels (DELETE /customers cancels all) then
+        // re-creates, or the customer renews. (The WhatsApp path already extends
+        // the existing sub rather than duplicating — repos.activateSubscription.)
+        const existingActive = await tx.subscription.findFirst({
+          where: { customerId: body.customerId, status: SubscriptionStatus.ACTIVE },
+          select: { id: true },
+        });
+        if (existingActive) return { conflict: true as const };
+
         const created = await tx.subscription.create({
           data: {
             customerId: body.customerId,
@@ -173,9 +186,16 @@ export async function registerSubscriptionRoutes(app: App) {
           where: { id: body.customerId },
           data: { litresPerDay: body.litresPerDay, status: CustomerStatus.ACTIVE },
         });
-        return created;
+        return { conflict: false as const, created };
       });
-      return reply.status(201).send({ subscription: sub, quote });
+      if (result.conflict) {
+        return reply.status(409).send({
+          error: 'ActiveSubscriptionExists',
+          message:
+            'Customer already has an active subscription. Cancel or renew it instead.',
+        });
+      }
+      return reply.status(201).send({ subscription: result.created, quote });
     },
   });
 

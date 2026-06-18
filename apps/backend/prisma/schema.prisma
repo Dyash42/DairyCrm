@@ -401,12 +401,26 @@ enum PaymentStatus {
 model Payment {
   id         String        @id @default(cuid())
   customerId String
-  customer   Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  // DAT-09: RESTRICT (not Cascade) so a customer who has any payment can never
+  // be hard-deleted — their financial ledger is protected even if someone calls
+  // prisma.customer.delete directly or adds a hard-delete endpoint. The app
+  // soft-cancels (status=CANCELLED), so this only ever blocks an unsafe delete.
+  customer   Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
   amount     Decimal       @db.Decimal(10, 2)
   mode       PaymentMode
   status     PaymentStatus @default(PENDING)
   reference  String? // gateway ref or note
   paidAt     DateTime?
+  // EDG-02: when this payment funds a WhatsApp onboarding/renew activation, the
+  // subscription parameters are captured here ({ kind, litresPerDay, daysOfWeek,
+  // durationDays }) so the signature-verified payment webhook can activate the
+  // subscription the moment it flips to PAID — instead of waiting for the customer
+  // to message the bot again. Null for manual/cash payments.
+  subscriptionIntent Json?
+  // Compare-and-swap guard: stamped exactly once when the intent is activated, so
+  // activation runs once per payment no matter how many times the webhook retries
+  // or the customer re-messages (prevents a double-extended subscription).
+  intentConsumedAt   DateTime?
   createdAt  DateTime      @default(now())
 
   @@index([customerId, status])
@@ -449,7 +463,9 @@ enum DeliveryStatus {
 model Delivery {
   id              String         @id @default(cuid())
   customerId      String
-  customer        Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  // DAT-09: RESTRICT — delivery history is an audit/billing record; a customer
+  // with deliveries cannot be hard-deleted (the app soft-cancels instead).
+  customer        Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
   /// Which subscription + product this delivery fulfils. A customer can hold
   /// multiple active subscriptions (e.g. cow + buffalo milk), so deliveries are
   /// keyed per product, not per customer (audit DAT-03/DAT-06). Nullable for

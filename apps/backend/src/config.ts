@@ -51,6 +51,14 @@ const Schema = z.object({
    * stub provider / dev, fails on real Meta sends).
    */
   PUBLIC_BASE_URL: z.string().url().optional(),
+  /**
+   * INT-08: public origin that serves the customer-facing /pin/<token> map
+   * page. Kept SEPARATE from ADMIN_ORIGIN so the admin app can be locked down
+   * (VPN/SSO/IP-allowlist) without breaking the customer location-capture link.
+   * Resolution order for the pin link: PUBLIC_PIN_BASE_URL → PUBLIC_BASE_URL →
+   * ADMIN_ORIGIN (back-compat default). Point this at wherever /pin is hosted.
+   */
+  PUBLIC_PIN_BASE_URL: z.string().url().optional(),
 
   // --- Redis ---
   REDIS_URL: z.string().optional(),

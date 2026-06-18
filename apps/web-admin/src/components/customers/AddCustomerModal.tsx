@@ -59,6 +59,14 @@ export function AddCustomerModal({
     setSubmitting(true);
     setError(null);
     try {
+      // WEB-09: never create a customer with 0 / blank / NaN litres — that makes
+      // a dead subscription the scheduler never materializes (silent no-deliver).
+      const litres = Number(form.litresPerDay);
+      if (!Number.isFinite(litres) || litres <= 0) {
+        setError('Litres per day must be a number greater than 0.');
+        setSubmitting(false);
+        return;
+      }
       const created = await createCustomer({
         name: form.name,
         phone: form.phone,
@@ -68,7 +76,7 @@ export function AddCustomerModal({
         area: form.area || undefined,
         pinCode: form.pinCode || undefined,
         routeId: form.routeId || undefined,
-        litresPerDay: Number(form.litresPerDay),
+        litresPerDay: litres,
       });
       onCreated(created.id);
     } catch (e) {
@@ -141,6 +149,7 @@ export function AddCustomerModal({
               required
               type="number"
               step="0.5"
+              min="0.5"
               value={form.litresPerDay}
               onChange={(e) => setForm((f) => ({ ...f, litresPerDay: e.target.value }))}
               className="input w-full tabular"

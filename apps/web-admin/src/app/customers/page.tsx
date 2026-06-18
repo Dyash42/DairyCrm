@@ -99,6 +99,10 @@ export default function CustomersPage() {
         name: c.name,
         phone: c.phone,
         addressLine1: c.addressLine1,
+        // ADM-07: carry the dedicated `area` column through so the client-side
+        // re-filter matches the SAME field the server filters on (it filters
+        // Customer.area, not addressLine1) — live + demo now agree.
+        area: c.area ?? undefined,
         routeId: c.routeId ?? undefined,
         routeName: c.routeName ?? null,
         status: c.status,
@@ -124,7 +128,8 @@ export default function CustomersPage() {
       // Mock/offline path re-filter for the unrouted deep-link (server already
       // applies it on the live path). routeId absent ⇒ unrouted.
       if (unrouted && c.routeId) return false;
-      if (a && !(c.addressLine1?.toLowerCase().includes(a) ?? false)) return false;
+      // ADM-07: match the dedicated area field, the same one the server filters.
+      if (a && !(c.area?.toLowerCase().includes(a) ?? false)) return false;
       if (!q) return true;
       return (
         c.name.toLowerCase().includes(q) ||

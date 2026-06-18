@@ -34,6 +34,15 @@ export interface UseApiResult<T> {
   reload: () => void;
 }
 
+/**
+ * INT-09: the mock fixtures are a DESIGN-DEMO aid, not an outage fallback.
+ * Showing them on a live 5xx/network error makes a down backend look like a
+ * working (stale) dashboard an admin can act on. Gate the fallback behind an
+ * explicit build-time flag; in production an infrastructure error surfaces as
+ * an error state instead of fake data.
+ */
+const DEMO_FALLBACK_ENABLED = process.env.NEXT_PUBLIC_DEMO === '1';
+
 /** Heuristic: network / server-down errors that justify the mock fallback. */
 function isInfrastructureError(err: unknown): boolean {
   if (err instanceof ApiError) {
@@ -81,8 +90,10 @@ export function useApiWithFallback<TApi, T>(
           return;
         }
         if (isInfrastructureError(err)) {
+          // INT-09: only render fixtures when the demo flag is set. In
+          // production a backend outage must read as an outage, not stale data.
           setData(fallback);
-          setSource('mock');
+          setSource(DEMO_FALLBACK_ENABLED ? 'mock' : 'error');
           setError(err);
           return;
         }

@@ -837,6 +837,8 @@ export interface CustomerPayload {
   name: string;
   phone: string;
   addressLine1: string;
+  /** Dedicated area column (ADM-07) — the field the server filters by area on. */
+  area?: string | null;
   routeId: string | null;
   status: 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'PENDING';
   litresPerDay: string | number;

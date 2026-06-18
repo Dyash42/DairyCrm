@@ -11,5 +11,13 @@ export default function Index() {
   if (status === 'unknown') {
     return <Splash />;
   }
-  return <Redirect href={status === 'signedIn' ? '/route' : '/login'} />;
+  const href =
+    status === 'signedIn'
+      ? '/route'
+      : status === 'needsPin'
+        ? '/enter-pin'
+        : status === 'needsPinSetup'
+          ? '/create-pin'
+          : '/login';
+  return <Redirect href={href} />;
 }

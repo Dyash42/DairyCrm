@@ -1,12 +1,12 @@
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  FlatList,
   Modal,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -72,6 +72,23 @@ export default function TodaysRouteScreen() {
       }
     })();
   }, [lastScan]);
+
+  // MIL-04/MOB-10: load/refresh the route when the screen gains focus — on
+  // mount, app resume, and when returning from scan/EOD. The route previously
+  // only loaded via manual pull-to-refresh (it never auto-loaded). Guarded so
+  // we never clobber optimistic OFFLINE marks: refresh only when online AND
+  // either nothing is queued (the server is authoritative) or the list is
+  // still empty (nothing local to lose).
+  useFocusEffect(
+    useCallback(() => {
+      const isOnline = useNetworkStore.getState().online;
+      const queued = useSyncStore.getState().queueDepth;
+      const loaded = useRouteStore.getState().summary.stops.length;
+      if (isOnline && (queued === 0 || loaded === 0)) {
+        void useRouteStore.getState().refresh();
+      }
+    }, []),
+  );
 
   const visibleStops = useMemo(() => {
     if (!query) return summary.stops;
@@ -154,40 +171,43 @@ export default function TodaysRouteScreen() {
         ) : null}
       </View>
 
-      <ScrollView
-        contentContainerStyle={{ paddingTop: 16, paddingBottom: 120 }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
-      >
-        <View style={styles.searchWrap}>
-          <MaterialIcons name="search" size={18} color={colors.textMuted} />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search customer, house, area"
-            placeholderTextColor={colors.textMuted}
-            style={styles.searchInput}
-          />
-        </View>
+      {/* Search stays OUTSIDE the FlatList so the input never loses focus when
+          the list re-renders on each keystroke (a known RN ListHeader pitfall). */}
+      <View style={styles.searchWrap}>
+        <MaterialIcons name="search" size={18} color={colors.textMuted} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search customer, house, area"
+          placeholderTextColor={colors.textMuted}
+          style={styles.searchInput}
+        />
+      </View>
 
-        <View style={styles.sectionRow}>
-          <AppText style={styles.sectionTitle}>DELIVERY SEQUENCE</AppText>
-          {!summary.isComplete ? (
-            <AppText style={styles.pending}>{summary.pendingCount} pending</AppText>
-          ) : null}
-        </View>
-
-        {summary.isComplete && summary.totalCustomers > 0 ? (
-          <RouteCompleteCard
-            summary={summary}
-            onSubmitDayReport={() => router.push('/end-of-day')}
-          />
+      <View style={styles.sectionRow}>
+        <AppText style={styles.sectionTitle}>DELIVERY SEQUENCE</AppText>
+        {!summary.isComplete ? (
+          <AppText style={styles.pending}>{summary.pendingCount} pending</AppText>
         ) : null}
+      </View>
 
-        {visibleStops.map((stop) => (
+      {/* PER-06: virtualize the stop list — the previous ScrollView + .map()
+          mounted every StopCard at once (a 100+ stop route rendered all rows). */}
+      <FlatList
+        data={visibleStops}
+        keyExtractor={(stop) => stop.id}
+        contentContainerStyle={{ paddingBottom: 120 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        ListHeaderComponent={
+          summary.isComplete && summary.totalCustomers > 0 ? (
+            <RouteCompleteCard
+              summary={summary}
+              onSubmitDayReport={() => router.push('/end-of-day')}
+            />
+          ) : null
+        }
+        renderItem={({ item: stop }) => (
           <StopCard
-            key={stop.id}
             stop={stop}
             onScanPressed={() => router.push('/scan')}
             onMorePressed={() => {
@@ -201,9 +221,8 @@ export default function TodaysRouteScreen() {
               })
             }
           />
-        ))}
-
-        {visibleStops.length === 0 ? (
+        )}
+        ListEmptyComponent={
           <View style={styles.empty}>
             <AppText style={styles.emptyText}>
               {summary.totalCustomers === 0
@@ -211,8 +230,8 @@ export default function TodaysRouteScreen() {
                 : 'No matches'}
             </AppText>
           </View>
-        ) : null}
-      </ScrollView>
+        }
+      />
 
       {!summary.isComplete ? (
         <Pressable
@@ -362,6 +381,7 @@ const styles = StyleSheet.create({
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginTop: 16,
     marginHorizontal: 16,
     paddingHorizontal: 12,
     backgroundColor: colors.surface,

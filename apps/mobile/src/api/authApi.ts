@@ -24,14 +24,33 @@ export const authApi = {
     await api.post('/auth/executive/otp/request', { phone });
   },
 
-  /** Verifies the OTP. On success returns the JWT and user. */
+  /**
+   * Verifies the OTP. On success returns the JWT, user, and whether a PIN is
+   * already configured server-side (`pinSet`). When false, the app prompts the
+   * executive to create a PIN for faster subsequent unlocks.
+   */
   async verifyOtp(
     phone: string,
     code: string,
-  ): Promise<{ token: string; user: AuthUser }> {
+  ): Promise<{ token: string; user: AuthUser; pinSet: boolean }> {
     const res = await api.post('/auth/executive/otp/verify', { phone, code });
-    const data = res.data as { token: string; user: Record<string, unknown> };
-    return { token: data.token, user: parseUser(data.user) };
+    const data = res.data as { token: string; user: Record<string, unknown>; pinSet?: boolean };
+    return { token: data.token, user: parseUser(data.user), pinSet: Boolean(data.pinSet) };
+  },
+
+  /** Sets/replaces the device-unlock PIN. Requires a valid JWT (post-OTP). */
+  async setPin(pin: string): Promise<void> {
+    await api.post('/auth/executive/pin/set', { pin });
+  },
+
+  /** Unlocks with phone + PIN, returns a fresh JWT + user. */
+  async verifyPin(
+    phone: string,
+    pin: string,
+  ): Promise<{ token: string; user: AuthUser; pinSet: boolean }> {
+    const res = await api.post('/auth/executive/pin/verify', { phone, pin });
+    const data = res.data as { token: string; user: Record<string, unknown>; pinSet?: boolean };
+    return { token: data.token, user: parseUser(data.user), pinSet: Boolean(data.pinSet) };
   },
 
   /** Reads the logged-in user (used to validate a cached JWT on app start). */

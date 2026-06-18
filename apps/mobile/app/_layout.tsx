@@ -52,9 +52,14 @@ export default function RootLayout() {
   useEffect(() => {
     if (status === 'unknown') return;
     if (!fontsLoaded && !fontError) return;
-    const inApp = segments[0] === '(app)';
-    if (status === 'signedOut' && inApp) {
+    const seg = segments[0];
+    const inApp = seg === '(app)';
+    if (status === 'signedOut' && seg !== 'login') {
       router.replace('/login');
+    } else if (status === 'needsPin' && seg !== 'enter-pin') {
+      router.replace('/enter-pin');
+    } else if (status === 'needsPinSetup' && seg !== 'create-pin') {
+      router.replace('/create-pin');
     } else if (status === 'signedIn' && !inApp) {
       router.replace('/route');
     }
@@ -75,6 +80,8 @@ export default function RootLayout() {
         >
           <Stack.Screen name="index" />
           <Stack.Screen name="login" />
+          <Stack.Screen name="enter-pin" />
+          <Stack.Screen name="create-pin" />
           <Stack.Screen name="(app)" />
         </Stack>
         <Toast />

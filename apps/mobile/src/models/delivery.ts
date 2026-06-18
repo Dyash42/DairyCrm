@@ -21,6 +21,9 @@ export interface DeliveryStopInit {
   customerId?: string;
   lat?: number | null;
   lng?: number | null;
+  /** Product for this stop — shown so a multi-product customer's milkman
+   *  knows WHICH product to hand over (audit DAT-03 follow-up). */
+  productName?: string | null;
 }
 
 export class DeliveryStop {
@@ -37,6 +40,7 @@ export class DeliveryStop {
   readonly customerId: string; // backend Customer.id (for saving the door pin)
   readonly lat: number | null;
   readonly lng: number | null;
+  readonly productName: string | null;
 
   constructor(init: DeliveryStopInit) {
     this.id = init.id;
@@ -52,6 +56,7 @@ export class DeliveryStop {
     this.customerId = init.customerId ?? '';
     this.lat = init.lat ?? null;
     this.lng = init.lng ?? null;
+    this.productName = init.productName ?? null;
   }
 
   get isDelivered(): boolean {
@@ -96,6 +101,7 @@ export class DeliveryStop {
       customerId: this.customerId,
       lat: this.lat,
       lng: this.lng,
+      productName: this.productName,
     });
   }
 }

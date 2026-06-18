@@ -37,6 +37,8 @@ export function ConfirmDeliverySheet({
 }) {
   const [qty, setQty] = useState(0);
   const [cash, setCash] = useState('');
+  // MOB-04: guard against a double-tap firing two /confirm scans for one stop.
+  const [submitting, setSubmitting] = useState(false);
 
   // Reset local state whenever a new stop is opened.
   useEffect(() => {
@@ -45,6 +47,11 @@ export function ConfirmDeliverySheet({
       setCash('');
     }
   }, [stop]);
+  // Reset the submit guard every time the sheet (re)opens — even for the same
+  // stop object, where the [stop] effect above would not re-run.
+  useEffect(() => {
+    if (visible) setSubmitting(false);
+  }, [visible]);
 
   if (!stop) {
     return <Modal visible={false} transparent />;
@@ -58,10 +65,22 @@ export function ConfirmDeliverySheet({
   };
 
   const handleDeliver = () => {
+    // MOB-04 double-tap guard + MOB-06 zero-litre guard: a 0 L "delivery" is a
+    // skip, not a delivery — block it (the button is also disabled at 0).
+    if (submitting || qty <= 0) return;
     const trimmed = cash.trim();
     const parsed = trimmed === '' ? null : Number.parseFloat(trimmed);
-    const cashValue = parsed != null && !Number.isNaN(parsed) ? parsed : null;
+    // MOB-06 cash validation: ignore negatives / NaN (backend also caps it).
+    const cashValue =
+      parsed != null && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    setSubmitting(true);
     onDeliver(qty, cashValue);
+  };
+
+  const handleSkip = () => {
+    if (submitting) return;
+    setSubmitting(true);
+    onSkip();
   };
 
   return (
@@ -82,6 +101,12 @@ export function ConfirmDeliverySheet({
             {stop.customerName} · {stop.houseNumber}
           </AppText>
           <AppText style={styles.address}>{stop.addressLine}</AppText>
+          {stop.productName ? (
+            <View style={styles.productRow}>
+              <MaterialIcons name="local-drink" size={14} color={colors.brand} />
+              <AppText style={styles.productText}>{stop.productName}</AppText>
+            </View>
+          ) : null}
 
           <AppText style={styles.fieldLabel}>DELIVERING</AppText>
           <View style={styles.stepperRow}>
@@ -115,14 +140,22 @@ export function ConfirmDeliverySheet({
 
           <Pressable
             onPress={handleDeliver}
-            style={({ pressed }) => [styles.deliverBtn, pressed && { opacity: 0.85 }]}
+            disabled={qty <= 0 || submitting}
+            style={({ pressed }) => [
+              styles.deliverBtn,
+              (qty <= 0 || submitting) && { opacity: 0.5 },
+              pressed && { opacity: 0.85 },
+            ]}
           >
             <MaterialIcons name="check" size={20} color={colors.white} />
-            <AppText style={styles.deliverText}>Mark delivered</AppText>
+            <AppText style={styles.deliverText}>
+              {qty <= 0 ? 'Enter a quantity (or skip)' : 'Mark delivered'}
+            </AppText>
           </Pressable>
 
           <Pressable
-            onPress={onSkip}
+            onPress={handleSkip}
+            disabled={submitting}
             style={({ pressed }) => [styles.skipBtn, pressed && { opacity: 0.6 }]}
           >
             <MaterialIcons name="do-not-disturb-alt" size={16} color={colors.textSecondary} />
@@ -180,6 +213,8 @@ const styles = StyleSheet.create({
   codeText: { color: colors.brand, fontSize: 11, fontWeight: '600', letterSpacing: 0.4 },
   name: { fontSize: 18, fontWeight: '700', color: colors.textPrimary, marginTop: 12 },
   address: { color: colors.textSecondary, fontSize: 13, marginTop: 4 },
+  productRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
+  productText: { color: colors.brand, fontSize: 13, fontWeight: '600', marginLeft: 4 },
   fieldLabel: {
     color: colors.textSecondary,
     fontSize: 12,

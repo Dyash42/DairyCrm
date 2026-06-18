@@ -58,6 +58,7 @@ export const deliveryApi = {
     const list = (data.deliveries as Record<string, unknown>[]) ?? [];
     const stops = list.map((d, i) => {
       const customer = (d.customer ?? {}) as Record<string, unknown>;
+      const product = (d.product ?? {}) as Record<string, unknown>;
       return new DeliveryStop({
         id: String(d.id),
         customerCode: customer.code != null ? String(customer.code) : '',
@@ -74,6 +75,7 @@ export const deliveryApi = {
         customerId: customer.id != null ? String(customer.id) : '',
         lat: customer.lat == null ? null : toNum(customer.lat),
         lng: customer.lng == null ? null : toNum(customer.lng),
+        productName: product.name != null ? String(product.name) : null,
       });
     });
     return {
